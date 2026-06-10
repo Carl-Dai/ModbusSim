@@ -31,3 +31,8 @@ Thumbs.db
 
 # Brainstorming session artifacts (mockups, state)
 .superpowers/
+
+# Release pipeline local artifacts
+RELEASE_BODY.md
+latest-slave*.json
+latest-master*.json

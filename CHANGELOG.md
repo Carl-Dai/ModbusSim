@@ -8,7 +8,18 @@ All notable changes to ModbusSim are documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.16.0] - 2026-06-10
+
+Minor 版本:技术栈收敛 + 应用内自动更新。废弃 egui 双轨,全面对齐姊妹项目 IEC60870-5-104-Simulator 的纯 Tauri 2 + Vue 3 架构;移植其成熟的自动更新机制(检查 / 弹窗 / 下载 / 安装 / 重启,多代理容灾 + minisign 签名)。
+
+Minor release: stack consolidation plus in-app auto update. The egui dual-track is discontinued, fully aligning with the sister project IEC60870-5-104-Simulator's pure Tauri 2 + Vue 3 architecture; its battle-tested auto-update pipeline (check / dialog / download / install / restart, multi-proxy failover + minisign verification) is ported over.
+
+### Highlights / 亮点
+
+- 🔄 **应用内自动更新** — 启动静默检查新版,弹窗展示更新说明与下载进度,一键安装重启;工具栏可手动「检查更新」。/ **In-app auto update**: silent startup check, update dialog with release notes & download progress, one-click install & restart; manual "Check for Updates" in the toolbar.
+- 🇨🇳 **国内网络友好** — 更新检查走 5 个 endpoint 容灾(自建代理优先,GitHub 直连兜底,3 个公共镜像殿后)。/ **CN-network friendly**: update checks fail over across 5 endpoints (self-hosted proxy first, GitHub direct, then 3 public mirrors).
+- 🔐 **更新包签名校验** — 全部更新产物 minisign 签名,客户端内置公钥验证,防篡改。/ **Signed updates**: every update bundle is minisign-signed and verified against the embedded public key.
+- 🧹 **BREAKING:egui 版停止发布** — 删除约 8.9k 行 egui 代码,workspace 6 crate → 3 crate,CI 更快更简单;egui 用户请迁移到 Tauri 版。/ **BREAKING: egui edition discontinued** — ~8.9k lines removed, workspace slimmed from 6 to 3 crates; egui users should migrate to the Tauri installers.
 
 ### Added 新增
 
