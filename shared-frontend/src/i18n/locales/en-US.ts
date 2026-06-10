@@ -44,6 +44,10 @@ const messages: Messages = {
     scan: 'Scan',
     appTitleMaster: 'ModbusMaster',
     appTitleSlave: 'ModbusSlave',
+    checkUpdate: 'Check for Updates',
+    checkingUpdate: 'Checking…',
+    alreadyLatest: 'You are on the latest version',
+    updateCheckFailed: 'Update check failed',
     openProjectTitle: 'Open Project',
     saveProjectTitle: 'Save Project',
     saveAsTitle: 'Save File As',
@@ -287,6 +291,17 @@ const messages: Messages = {
     discreteInputDesc: 'Discrete Input (read-only, 1-bit, FC 02)',
     inputRegisterDesc: 'Input Register (read-only, 16-bit, FC 04)',
     holdingRegisterDesc: 'Holding Register (read/write, 16-bit, FC 03/06/16)',
+  },
+  update: {
+    available: 'Update available',
+    newVersion: 'Version v{version} is available',
+    changelog: 'Release notes',
+    installNow: 'Install now',
+    later: 'Later',
+    downloading: 'Downloading {pct}%',
+    failedTitle: 'Update failed',
+    retry: 'Retry',
+    close: 'Close',
   },
 }
 

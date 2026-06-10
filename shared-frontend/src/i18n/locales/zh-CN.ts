@@ -42,6 +42,10 @@ const messages = {
     scan: '扫描',
     appTitleMaster: 'ModbusMaster',
     appTitleSlave: 'ModbusSlave',
+    checkUpdate: '检查更新',
+    checkingUpdate: '检查中…',
+    alreadyLatest: '已是最新版本',
+    updateCheckFailed: '更新检查失败',
     openProjectTitle: '打开项目',
     saveProjectTitle: '保存项目',
     saveAsTitle: '文件另存为',
@@ -285,6 +289,17 @@ const messages = {
     discreteInputDesc: '离散输入 (只读, 1-bit, 功能码 02)',
     inputRegisterDesc: '输入寄存器 (只读, 16-bit, 功能码 04)',
     holdingRegisterDesc: '保持寄存器 (读写, 16-bit, 功能码 03/06/16)',
+  },
+  update: {
+    available: '检测到新版本',
+    newVersion: '新版本 v{version} 可用',
+    changelog: '更新说明',
+    installNow: '立即更新',
+    later: '稍后',
+    downloading: '正在下载 {pct}%',
+    failedTitle: '更新失败',
+    retry: '重试',
+    close: '关闭',
   },
 } as const
 

@@ -10,6 +10,10 @@ All notable changes to ModbusSim are documented in this file.
 
 ## [Unreleased]
 
+### Added 新增
+
+- **应用内自动更新** — 对齐 IEC60870-5-104-Simulator 的更新机制:启动 2 秒后静默检查(6 小时节流),发现新版弹出更新对话框(版本号 / 更新说明 / 下载进度),支持一键下载安装重启与「稍后」24 小时 snooze;工具栏新增「检查更新」按钮(强制检查,无视节流与 snooze)。更新检查走 5 个 endpoint 容灾(自建代理 → GitHub 直连 → 3 个公共代理),更新包 minisign 签名校验。后端 `update.rs`(`check_for_update` / `install_update` / `snooze_update`)+ `tauri-plugin-updater/process/store`;发布链路新增 `scripts/gen-update-manifest.mjs` 与 release.yml `publish-manifest` job。/ **In-app auto update** aligned with the IEC104 simulator: silent startup check (6 h throttle), update dialog with release notes and download progress, one-click install & restart, 24 h snooze, and a toolbar "Check for Updates" button (force check). Checks fail over across 5 endpoints (self-hosted proxy → GitHub → 3 public proxies); bundles are minisign-verified. Backend `update.rs` + updater/process/store plugins; release pipeline gains `gen-update-manifest.mjs` and a `publish-manifest` job.
+
 ### Removed 移除
 
 - **BREAKING：egui 原生版停止维护与发布** — 删除 `modbussim-egui` / `modbusmaster-egui` / `modbussim-ui-shared` 三个 crate 及 `ci-egui.yml`、release 中的 egui 打包 job;后续 Release 不再提供 `-egui-` 后缀的二进制,egui 版用户请迁移到 Tauri 版安装包(`.dmg` / `.exe` / `.msi` / `.deb` / `.AppImage` / `.rpm`),功能为 egui 版超集。/ **BREAKING: the native egui edition is discontinued** — the `modbussim-egui` / `modbusmaster-egui` / `modbussim-ui-shared` crates, `ci-egui.yml`, and the egui release packaging job are removed; releases no longer ship `-egui-` suffixed binaries. egui users should migrate to the Tauri installers, which are a feature superset.

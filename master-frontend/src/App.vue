@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, provide, onMounted, onUnmounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import Toolbar from './components/Toolbar.vue'
 import ConnectionTree from './components/ConnectionTree.vue'
 import DataTable from './components/DataTable.vue'
 import ValuePanel from './components/ValuePanel.vue'
 import LogPanel from './components/LogPanel.vue'
-import { AppDialog } from 'shared-frontend'
+import { AppDialog, UpdateDialog } from 'shared-frontend'
 import type { ScanGroupInfo, RegisterValueDto } from './types'
 
 // Shared state
@@ -57,6 +58,9 @@ onMounted(async () => {
   unlistenPollError = await listen<{ connection_id: string; error: string }>('master-poll-error', () => {
     refreshTree()
   })
+  setTimeout(() => {
+    checkUpdate(false).catch((e) => console.warn('auto update check failed', e))
+  }, 2000)
 })
 
 onUnmounted(() => {
@@ -93,6 +97,27 @@ function handleRegisterSelect(regs: RegisterValueDto[]) {
 function toggleLog() {
   logExpanded.value = !logExpanded.value
 }
+
+// --- Auto update -------------------------------------------------------------
+type UpdateMeta = { version: string; notes: string; pub_date?: string | null }
+const updateMeta = ref<UpdateMeta | null>(null)
+const updateVisible = ref(false)
+
+async function checkUpdate(force = false): Promise<UpdateMeta | null> {
+  const meta = await invoke<UpdateMeta | null>('check_for_update', { force })
+  if (meta) {
+    updateMeta.value = meta
+    updateVisible.value = true
+  }
+  return meta
+}
+provide('checkUpdate', checkUpdate)
+
+function snoozeUpdate() {
+  if (updateMeta.value) {
+    invoke('snooze_update', { version: updateMeta.value.version }).catch(() => {})
+  }
+}
 </script>
 
 <template>
@@ -120,6 +145,13 @@ function toggleLog() {
       <LogPanel :expanded="logExpanded" @toggle="toggleLog" />
     </footer>
     <AppDialog />
+    <UpdateDialog
+      :visible="updateVisible"
+      :version="updateMeta?.version ?? ''"
+      :notes="updateMeta?.notes ?? ''"
+      @close="updateVisible = false"
+      @snooze="snoozeUpdate"
+    />
   </div>
 </template>
 

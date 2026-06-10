@@ -43,6 +43,7 @@ export type { Toast } from './composables/useErrorHandler'
 export { default as AppDialog } from './components/AppDialog.vue'
 export { default as LangToggle } from './components/LangToggle.vue'
 export { default as LogPanelShell } from './components/LogPanelShell.vue'
+export { default as UpdateDialog } from './components/UpdateDialog.vue'
 
 // i18n
 export { useI18n, type Locale } from './i18n'

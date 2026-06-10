@@ -19,6 +19,23 @@ const currentProjectPath = ref<string | null>(null)
 const showNewConn = ref(false)
 const showNewSlave = ref(false)
 
+type UpdateMeta = { version: string; notes: string; pub_date?: string | null }
+const checkUpdate = inject<(force?: boolean) => Promise<UpdateMeta | null>>('checkUpdate')!
+const updateChecking = ref(false)
+
+async function manualCheckUpdate() {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    const meta = await checkUpdate(true)
+    if (!meta) await showAlert(t('toolbar.alreadyLatest'))
+  } catch (e) {
+    await showAlert(`${t('toolbar.updateCheckFailed')}: ${e}`)
+  } finally {
+    updateChecking.value = false
+  }
+}
+
 async function openProject() {
   try {
     const path = await open({
@@ -153,6 +170,9 @@ async function openTools() {
       </button>
     </div>
     <div class="toolbar-spacer" style="flex:1"></div>
+    <button class="toolbar-btn" :disabled="updateChecking" @click="manualCheckUpdate">
+      <span class="toolbar-label">{{ updateChecking ? t('toolbar.checkingUpdate') : t('toolbar.checkUpdate') }}</span>
+    </button>
     <LangToggle />
     <div class="toolbar-title">{{ t('toolbar.appTitleSlave') }}</div>
   </div>

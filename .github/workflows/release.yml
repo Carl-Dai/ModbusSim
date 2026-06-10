@@ -59,6 +59,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/modbussim-app
           tagName: ${{ github.ref_name }}
@@ -70,8 +72,17 @@ jobs:
             **ModbusMaster** - Modbus TCP 主站工具
 
             See the assets below to download for your platform.
-          releaseDraft: false
+          # Keep the release a draft during the build: GitHub's
+          # `releases/latest` skips drafts, so existing users' update checks
+          # keep hitting the previous *complete* release. publish-manifest
+          # clears the draft flag once installers + manifest are all in.
+          releaseDraft: true
           prerelease: false
+          # The project ships its own latest-slave/master.json via
+          # gen-update-manifest; tauri-action's latest.json is unused. Being a
+          # single shared filename, every parallel matrix job clobbers it —
+          # a known "delete-a-release-asset" 404 race. Skip it.
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
 
       # --- ModbusMaster ---
@@ -83,6 +94,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/modbusmaster-app
           tagName: ${{ github.ref_name }}
@@ -94,6 +107,43 @@ jobs:
             **ModbusMaster** - Modbus TCP 主站工具
 
             See the assets below to download for your platform.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
+
+  publish-manifest:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Un-draft first: this job only runs once every build succeeded, so the
+      # release is now complete enough to go live. Publishing here (rather than
+      # last) lets the manifest script run against a normal published release
+      # — `releases/tags/<tag>` and public asset URLs all work. The residual
+      # window where `releases/latest` lacks the update manifest shrinks from
+      # the whole build to the few seconds of manifest generation.
+      - name: Publish release (clear draft flag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit ${{ github.ref_name }} --draft=false
+      - name: Generate manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/gen-update-manifest.mjs ${{ github.ref_name }}
+      - name: Upload manifests to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if gh release upload ${{ github.ref_name }} \
+              latest-slave.json latest-slave-cn0.json latest-slave-cn1.json latest-slave-cn2.json latest-slave-cn3.json \
+              latest-master.json latest-master-cn0.json latest-master-cn1.json latest-master-cn2.json latest-master-cn3.json \
+              --clobber; then exit 0; fi
+            echo "::warning::manifest upload attempt $attempt failed, retrying in 10s"
+            sleep 10
+          done
+          echo "::error::manifest upload failed after 5 attempts"; exit 1

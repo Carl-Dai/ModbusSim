@@ -20,6 +20,23 @@ const showNewScanGroup = ref(false)
 const showWriteModal = ref(false)
 const showScanDialog = ref(false)
 
+type UpdateMeta = { version: string; notes: string; pub_date?: string | null }
+const checkUpdate = inject<(force?: boolean) => Promise<UpdateMeta | null>>('checkUpdate')!
+const updateChecking = ref(false)
+
+async function manualCheckUpdate() {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    const meta = await checkUpdate(true)
+    if (!meta) await showAlert(t('toolbar.alreadyLatest'))
+  } catch (e) {
+    await showAlert(`${t('toolbar.updateCheckFailed')}: ${e}`)
+  } finally {
+    updateChecking.value = false
+  }
+}
+
 async function openProject() {
   try {
     const path = await open({ filters: [{ name: 'Modbus Project', extensions: ['modbusproj'] }] })
@@ -157,6 +174,9 @@ const hasConnection = () => selectedConnectionId.value !== null
     </div>
 
     <div class="toolbar-spacer"></div>
+    <button class="toolbar-btn" :disabled="updateChecking" @click="manualCheckUpdate">
+      {{ updateChecking ? t('toolbar.checkingUpdate') : t('toolbar.checkUpdate') }}
+    </button>
     <LangToggle />
     <span class="toolbar-title">{{ t('toolbar.appTitleMaster') }}</span>
   </div>
