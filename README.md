@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/Karl-Dai/ModbusSim?label=release&color=2ea043)](https://github.com/Karl-Dai/ModbusSim/releases)
 [![Downloads](https://img.shields.io/github/downloads/Karl-Dai/ModbusSim/total?color=1f6feb)](https://github.com/Karl-Dai/ModbusSim/releases)
 [![Stars](https://img.shields.io/github/stars/Karl-Dai/ModbusSim?color=e3b341)](https://github.com/Karl-Dai/ModbusSim/stargazers)
-[![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey.svg)](#license)
+[![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20·%20macOS%20·%20Linux-informational)]()
 
 Built with **Rust** · **Tauri 2** · **Vue 3**
@@ -273,4 +273,4 @@ Strips the quarantine flag so macOS stops blocking.
 
 ## License
 
-MIT
+[MIT](LICENSE)
