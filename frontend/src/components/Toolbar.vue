@@ -2,7 +2,7 @@
 import { ref, inject, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { save, open } from '@tauri-apps/plugin-dialog'
-import { useI18n, LangToggle, showAlert, showConfirm } from 'shared-frontend'
+import { useI18n, LangToggle, VersionBadge, showAlert, showConfirm } from 'shared-frontend'
 import NewConnectionDialog from './NewConnectionDialog.vue'
 import NewSlaveDialog from './NewSlaveDialog.vue'
 import MutationControl from './MutationControl.vue'
@@ -174,6 +174,7 @@ async function openTools() {
       <span class="toolbar-label">{{ updateChecking ? t('toolbar.checkingUpdate') : t('toolbar.checkUpdate') }}</span>
     </button>
     <LangToggle />
+    <VersionBadge />
     <div class="toolbar-title">{{ t('toolbar.appTitleSlave') }}</div>
   </div>
 

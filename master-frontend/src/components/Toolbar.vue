@@ -2,7 +2,7 @@
 import { inject, ref, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { save, open } from '@tauri-apps/plugin-dialog'
-import { useI18n, LangToggle, showAlert, showConfirm } from 'shared-frontend'
+import { useI18n, LangToggle, VersionBadge, showAlert, showConfirm } from 'shared-frontend'
 import ScanDialog from './ScanDialog.vue'
 import NewConnectionDialog from './NewConnectionDialog.vue'
 import NewScanGroupDialog from './NewScanGroupDialog.vue'
@@ -178,6 +178,7 @@ const hasConnection = () => selectedConnectionId.value !== null
       {{ updateChecking ? t('toolbar.checkingUpdate') : t('toolbar.checkUpdate') }}
     </button>
     <LangToggle />
+    <VersionBadge />
     <span class="toolbar-title">{{ t('toolbar.appTitleMaster') }}</span>
   </div>
 
