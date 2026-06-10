@@ -8,6 +8,14 @@ All notable changes to ModbusSim are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Removed 移除
+
+- **BREAKING：egui 原生版停止维护与发布** — 删除 `modbussim-egui` / `modbusmaster-egui` / `modbussim-ui-shared` 三个 crate 及 `ci-egui.yml`、release 中的 egui 打包 job;后续 Release 不再提供 `-egui-` 后缀的二进制,egui 版用户请迁移到 Tauri 版安装包(`.dmg` / `.exe` / `.msi` / `.deb` / `.AppImage` / `.rpm`),功能为 egui 版超集。/ **BREAKING: the native egui edition is discontinued** — the `modbussim-egui` / `modbusmaster-egui` / `modbussim-ui-shared` crates, `ci-egui.yml`, and the egui release packaging job are removed; releases no longer ship `-egui-` suffixed binaries. egui users should migrate to the Tauri installers, which are a feature superset.
+
+---
+
 ## [0.15.0] - 2026-05-02
 
 Minor 版本:前端大型重构 + 后端推送式事件架构。两端统一抽出共享 `LogPanelShell` / `useFcLabel` / `formatAddress`;`useDialog` 去掉 provide/inject 中转层并接入 i18n;Slave / Master Toolbar 各拆 3 个 modal 子组件;Slave RegisterTable 拆出 `useRegisterValues` + `useRegisterFormat` composables。后端新增 `RegisterChangeCallback` 与 `LogAppendCallback`,核心写路径成功后 emit `register-value-changed` / `log-appended`,前端 `setInterval` 2s 轮询全量替换为 `listen()`。`LogCollector` 内部从 `Vec` 切到 `VecDeque`,日志满 buffer 时 `pop_front()` 取代 O(N) 的 `remove(0)`。无破坏性变更(仍是单工程 git tag 发版,Cargo.toml/tauri.conf.json 不动)。
