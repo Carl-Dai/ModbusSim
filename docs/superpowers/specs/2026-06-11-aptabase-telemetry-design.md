@@ -17,7 +17,7 @@
 | --- | --- |
 | 托管 | Aptabase **云托管免费版**（aptabase.com SaaS） |
 | 隐私默认 | **opt-out**：默认开启，设置里可关闭 |
-| 应用区分 | **两个独立 Aptabase 应用**（Slave / Master），各一个 App Key |
+| 应用区分 | **单一 Aptabase 应用**，两端共用 App Key `A-US-1280171703`，靠 `app_started` 的 `edition` 属性区分 slave / master |
 | 事件范围 | **仅 `app_started`**（应用生命周期），后续按需再加 |
 | 开关 UI | **「关于」气泡**：扩展 `VersionBadge`，弹出含版本号 + GitHub 链接 + 遥测勾选框 |
 
@@ -25,7 +25,7 @@
 
 - 仅用 **Rust 插件 `tauri-plugin-aptabase`**（`Builder::new(APP_KEY).build()`）。`app_started` 在 Rust `.setup()` 中触发。
 - 因此**前端不引入 `@aptabase/tauri` npm 包，也不需要 `aptabase:allow-track-event` ACL**——前端只通过自定义 Tauri 命令读写开关。
-- App Key 按 Aptabase 设计为**非机密**（随客户端分发），作为常量直接写入各 app 的源码并提交，不进环境变量。
+- App Key 按 Aptabase 设计为**非机密**（随客户端分发），作为常量直接写入各 app 的源码并提交，不进环境变量。两端共用同一个 Key `A-US-1280171703`。
 
 ## 组件与改动（两个 app 对称，沿用现有 `update.rs` 双份模式）
 
@@ -33,10 +33,11 @@
 
 每个 app crate 新增 `analytics.rs`（约 30 行）：
 
-- `const APTABASE_KEY: &str` — 该 app 的 App Key（slave / master 各一）。
+- `const APTABASE_KEY: &str = "A-US-1280171703"` — 两端相同。
+- `const EDITION: &str` — slave crate 为 `"slave"`，master crate 为 `"master"`（用于区分两端）。
 - `const STORE_FILE: &str = "settings.json"`、`const KEY_ENABLED: &str = "analytics_enabled"`。
 - `is_enabled(app) -> bool`：读 store，**缺省 `true`**（opt-out）。
-- `track_started(app)`：`is_enabled` 为真时 `app.track_event("app_started", None)`（需 `use tauri_plugin_aptabase::EventTracker;`）。
+- `track_started(app)`：`is_enabled` 为真时 `app.track_event("app_started", Some(json!({"edition": EDITION})))`（需 `use tauri_plugin_aptabase::EventTracker;`）。
 - `#[tauri::command] get_analytics_enabled(app) -> bool`
 - `#[tauri::command] set_analytics_enabled(app, enabled: bool)`：写 store 并 `save()`。
 
@@ -81,7 +82,7 @@
 
 ## 采集内容与隐私
 
-- 仅 `app_started`。Aptabase 自动附带：app 版本、OS、locale、国家（由请求 IP 现场推算、**不持久化 IP**）、匿名会话 ID。
+- 仅 `app_started`，自定义属性 `edition`（slave/master）。Aptabase 自动附带：app 版本、OS、locale、国家（由请求 IP 现场推算、**不持久化 IP**）、匿名会话 ID。
 - **无任何 PII，不识别个体。**
 - README（中英）新增「匿名使用统计 / Anonymous Usage Analytics」小节，说明采集内容、用途、以及在「关于」气泡里关闭的方法。
 
@@ -93,10 +94,10 @@
   - 启动 app → Aptabase 仪表盘出现 `app_started` 事件、带正确版本/OS。
   - 关闭开关 → 重启 → 仪表盘不再新增事件。
 
-## 前置条件（用户提供）
+## 前置条件（已就绪）
 
-- 在 aptabase.com 注册并创建两个应用（ModbusSim Slave / ModbusSim Master），获取两个 App Key（形如 `A-US-xxxxxxxxxx`）。
-- 在拿到真实 Key 之前，实现先用占位常量 `A-XX-XXXXXXXXXX`，由用户替换。
+- App Key 已提供：`A-US-1280171703`（单一应用，两端共用），无占位、可直接实现。
+- Aptabase 仪表盘可用 `edition` 属性把 slave / master 拆开查看。
 
 ## 非目标（YAGNI）
 
