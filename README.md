@@ -43,6 +43,7 @@ Testing a Modbus integration usually means wiring up a real PLC or borrowing a m
 - [Contributing](#contributing)
 - [Changelog](#changelog)
 - [macOS First Launch](#macos-first-launch)
+- [Anonymous Usage Analytics](#anonymous-usage-analytics)
 - [License](#license)
 
 ## Screenshots
