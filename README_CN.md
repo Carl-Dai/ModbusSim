@@ -271,6 +271,10 @@ xattr -dr com.apple.quarantine "/Applications/ModbusMaster.app"
 
 </details>
 
+## 匿名使用统计
+
+ModbusSim 启动时通过 [Aptabase](https://aptabase.com) 发送一个匿名的 `app_started` 事件,便于作者了解装机量、活跃度与版本/系统分布。它**不采集任何个人数据**——只有应用版本、操作系统、语言和由 IP 现场推算的大致国家(IP 本身从不存储)。可随时在工具栏的 ⓘ「关于」气泡里关闭。
+
 ## 许可证
 
 [MIT](LICENSE)

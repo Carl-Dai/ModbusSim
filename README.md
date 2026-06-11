@@ -271,6 +271,10 @@ Strips the quarantine flag so macOS stops blocking.
 
 </details>
 
+## Anonymous Usage Analytics
+
+ModbusSim sends an anonymous `app_started` event on launch via [Aptabase](https://aptabase.com), so the author can see install counts, active usage, and version/OS distribution. It collects **no personal data** — only app version, OS, locale, and an approximate country derived from your IP (the IP itself is never stored). You can turn it off anytime via the ⓘ "About" popover in the toolbar.
+
 ## License
 
 [MIT](LICENSE)
