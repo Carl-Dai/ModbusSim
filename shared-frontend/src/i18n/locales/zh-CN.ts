@@ -290,6 +290,11 @@ const messages = {
     inputRegisterDesc: '输入寄存器 (只读, 16-bit, 功能码 04)',
     holdingRegisterDesc: '保持寄存器 (读写, 16-bit, 功能码 03/06/16)',
   },
+  about: {
+    title: '关于',
+    analytics: '分享匿名使用统计',
+    analyticsNote: '仅采集版本、系统等匿名信息,不含任何个人数据。下次启动生效。',
+  },
   update: {
     available: '检测到新版本',
     newVersion: '新版本 v{version} 可用',

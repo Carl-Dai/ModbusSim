@@ -292,6 +292,11 @@ const messages: Messages = {
     inputRegisterDesc: 'Input Register (read-only, 16-bit, FC 04)',
     holdingRegisterDesc: 'Holding Register (read/write, 16-bit, FC 03/06/16)',
   },
+  about: {
+    title: 'About',
+    analytics: 'Share anonymous usage analytics',
+    analyticsNote: 'Only anonymous info like app version and OS — no personal data. Takes effect on next launch.',
+  },
   update: {
     available: 'Update available',
     newVersion: 'Version v{version} is available',
