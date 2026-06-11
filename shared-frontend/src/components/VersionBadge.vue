@@ -2,12 +2,18 @@
 import { ref, onMounted } from 'vue'
 import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
+import { useI18n } from 'shared-frontend'
+
+const { t } = useI18n()
 
 const REPO_URL = 'https://github.com/Karl-Dai/ModbusSim'
 const version = ref('')
+const showPanel = ref(false)
+const analyticsEnabled = ref(true)
 
 onMounted(async () => {
   try { version.value = await getVersion() } catch { version.value = '' }
+  try { analyticsEnabled.value = await invoke<boolean>('get_analytics_enabled') } catch { /* not in Tauri */ }
 })
 
 // In a Tauri webview window.open can't reach the OS browser, so go through the
@@ -19,6 +25,13 @@ async function openRepo() {
   } catch {
     window.open(REPO_URL, '_blank')
   }
+}
+
+async function toggleAnalytics() {
+  analyticsEnabled.value = !analyticsEnabled.value
+  try {
+    await invoke('set_analytics_enabled', { enabled: analyticsEnabled.value })
+  } catch { /* not in Tauri */ }
 }
 </script>
 
@@ -43,11 +56,35 @@ async function openRepo() {
                  1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
       </svg>
     </button>
+    <button
+      type="button"
+      class="about-toggle"
+      :title="t('about.title')"
+      :aria-label="t('about.title')"
+      @click="showPanel = !showPanel"
+    >
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">
+        <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM8 4a1 1 0 1 1 0 2 1 1 0 0 1 0-2zM7 7h2v5H7z"/>
+      </svg>
+    </button>
+
+    <template v-if="showPanel">
+      <div class="about-backdrop" @click="showPanel = false"></div>
+      <div class="about-panel" role="dialog" :aria-label="t('about.title')">
+        <div class="about-title">ModbusSim<span v-if="version"> v{{ version }}</span></div>
+        <label class="about-row">
+          <input type="checkbox" :checked="analyticsEnabled" @change="toggleAnalytics" />
+          <span>{{ t('about.analytics') }}</span>
+        </label>
+        <div class="about-note">{{ t('about.analyticsNote') }}</div>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .version-badge {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -61,7 +98,8 @@ async function openRepo() {
   line-height: 1;
   white-space: nowrap;
 }
-.github-link {
+.github-link,
+.about-toggle {
   display: inline-flex;
   align-items: center;
   padding: 3px 4px;
@@ -73,6 +111,46 @@ async function openRepo() {
   border-radius: 4px;
   line-height: 1;
 }
-.github-link:hover { color: #cdd6f4; background: #313244; }
-.github-link svg { display: block; }
+.github-link:hover,
+.about-toggle:hover { color: #cdd6f4; background: #313244; }
+.github-link svg,
+.about-toggle svg { display: block; }
+
+.about-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.about-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  z-index: 41;
+  width: 240px;
+  padding: 10px 12px;
+  background: #1e1e2e;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: #cdd6f4;
+  font-size: 12px;
+  text-align: left;
+}
+.about-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.about-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.about-row input { cursor: pointer; }
+.about-note {
+  margin-top: 6px;
+  color: #6c7086;
+  line-height: 1.4;
+}
 </style>
