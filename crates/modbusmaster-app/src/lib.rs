@@ -1,3 +1,4 @@
+mod analytics;
 mod commands;
 mod state;
 pub mod update;
@@ -11,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_aptabase::Builder::new(analytics::APTABASE_KEY).build())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             // Connection commands
@@ -59,6 +61,9 @@ pub fn run() {
             update::check_for_update,
             update::install_update,
             update::snooze_update,
+            // Analytics commands
+            analytics::get_analytics_enabled,
+            analytics::set_analytics_enabled,
         ])
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -69,8 +74,15 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            analytics::track_started(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                use tauri_plugin_aptabase::EventTracker;
+                app_handle.flush_events_blocking();
+            }
+        });
 }
