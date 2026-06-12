@@ -8,6 +8,22 @@ All notable changes to ModbusSim are documented in this file.
 
 ---
 
+## [0.17.1] - 2026-06-12
+
+维护版本:发布流水线修复 + OpenSpec 规格归档。**无应用代码改动**,安装包与 v0.17.0 功能一致。
+
+Maintenance release: release-pipeline fix plus OpenSpec spec archival. **No application code changes** — installers are functionally identical to v0.17.0.
+
+### Fixed 修复
+
+- **发布流水线** — `publish-manifest` job 补 `contents: write` 权限,修复其默认 token 看不到 draft release、导致 release 卡在草稿且 body 不被替换的问题(v0.16 / v0.17 曾因此需要手动补救)。/ **Release pipeline** — granted the `publish-manifest` job `contents: write` so its token can see and publish the draft release; fixes releases getting stuck as drafts with an unreplaced body (previously required manual rescue on v0.16 / v0.17).
+
+### Internal 内部
+
+- **OpenSpec 规格归档** — 归档 `value-panel-writeback` / `improved-slave-register-ui` / `slave-ui-overhaul` 三个已完成 change,同步生成 9 个能力规格;废弃已 moot 的 `egui-033-shadcn-migration`(egui 已于 v0.16 删除);`auto-update` 规格补全 `## 目的` / `## 需求` 结构并通过校验。/ **OpenSpec archival** — archived three completed changes into nine capability specs, abandoned the moot `egui-033-shadcn-migration` change, and normalized the `auto-update` spec to pass validation.
+
+---
+
 ## [0.17.0] - 2026-06-12
 
 Minor 版本:匿名使用统计 + 门面打磨。新增隐私友好的 Aptabase 遥测(仅匿名 `app_started`,可一键关闭),工具栏加版本号与 GitHub 入口,README 对齐姊妹项目精装版式并补齐 MIT LICENSE。
