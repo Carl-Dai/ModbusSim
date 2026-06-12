@@ -8,6 +8,41 @@ All notable changes to ModbusSim are documented in this file.
 
 ---
 
+## [0.17.0] - 2026-06-12
+
+Minor 版本:匿名使用统计 + 门面打磨。新增隐私友好的 Aptabase 遥测(仅匿名 `app_started`,可一键关闭),工具栏加版本号与 GitHub 入口,README 对齐姊妹项目精装版式并补齐 MIT LICENSE。
+
+Minor release: anonymous usage analytics plus presentation polish. Adds privacy-friendly Aptabase telemetry (anonymous `app_started` only, one-click opt-out), a toolbar version badge with a GitHub link, a README revamp aligned with the sister project, and the MIT LICENSE file.
+
+### Highlights / 亮点
+
+- 📊 **匿名使用统计** — slave / master 启动时通过 [Aptabase](https://aptabase.com) 上报匿名 `app_started`,作者得以了解装机量、活跃度与版本/系统分布;无任何 PII,工具栏 ⓘ「关于」气泡一键关闭(默认开启)。/ **Anonymous usage analytics**: both apps report an anonymous `app_started` on launch via Aptabase — install counts, active usage, version/OS distribution, no PII, one-click opt-out in the toolbar ⓘ "About" popover.
+- 🏷️ **工具栏版本号 + GitHub 图标** — 一眼看到当前版本,点击图标直达仓库。/ **Toolbar version badge + GitHub link**: see the running version at a glance, click through to the repo.
+- 📖 **README 精装改版** — 对齐姊妹项目 IEC60870-5-104-Simulator 版式:居中精装头部、徽章、实拍截图与快速开始教程;补齐 MIT `LICENSE`。/ **README revamp** aligned with the sister project: centered hero header, badges, real screenshots, a quick-start tutorial, and the MIT `LICENSE` file.
+- 🐛 **修复下载量徽章错误图与 CI draft 问题**。/ **Fixed** the downloads badge error image and a CI release-draft issue.
+
+### Added 新增
+
+- **匿名使用统计(Aptabase)** — slave / master 启动时上报匿名 `app_started`,带 `edition`(slave/master)区分两端;默认开启、可在工具栏 ⓘ「关于」气泡里关闭(opt-out),开关存 `tauri-plugin-store` 的 `settings.json`。仅采集应用版本、操作系统、语言与由 IP 现算的大致国家(不存 IP),无任何 PII。Rust 端新增 `analytics.rs` + `tauri-plugin-aptabase`,前端 `VersionBadge` 扩展为「关于」气泡含遥测开关。/ **Anonymous usage analytics (Aptabase)**: both apps emit an anonymous `app_started` with an `edition` property; enabled by default with a toolbar opt-out (stored in `tauri-plugin-store`'s `settings.json`). Collects only app version, OS, locale and an approximate IP-derived country (IP never stored) — no PII. New Rust `analytics.rs` + `tauri-plugin-aptabase`; the `VersionBadge` gains an "About" popover with the toggle.
+- **工具栏版本号徽章 + GitHub 链接图标** — `VersionBadge` 组件运行时读 `getVersion()`,GitHub 图标经 opener 插件打开仓库页。/ **Toolbar version badge + GitHub icon** — `VersionBadge` reads `getVersion()` at runtime; the GitHub icon opens the repo via the opener plugin.
+- **MIT `LICENSE` 文件** — README badge 与许可证小节改为链接该文件。/ **MIT `LICENSE` file**, with the README badge and license section linking to it.
+
+### Changed 改进
+
+- **README 中英版面对齐姊妹项目** — 精装居中头部 + 徽章、实拍截图、快速开始教程。/ **README layout aligned with the sister project** — centered hero header with badges, real screenshots, and a quick-start tutorial.
+
+### Fixed 修复
+
+- **下载量徽章错误图** — shields.io 的 GitHub token 池限流时返回的错误文案被 GitHub camo 缓存成错误图;徽章 URL 加 `cacheSeconds=3600` 刷新缓存并降低再次限流概率。/ **Downloads badge error image** — shields.io's rate-limit error message got cached by GitHub camo; added `cacheSeconds=3600` to bust the cache and reduce future throttling.
+- **CI 发布草稿** — `publish-manifest` 改用 release id 取消 draft,绕开 tag-404。/ **CI release draft** — `publish-manifest` now cancels the draft by release id, avoiding a tag-404.
+
+### Internal 内部
+
+- 因新增 `tauri-plugin-aptabase` 插件,重新生成两个 app 的 Tauri ACL 清单(`gen/schemas`)。/ Regenerated both apps' Tauri ACL manifests (`gen/schemas`) for the new `tauri-plugin-aptabase` plugin.
+- 新增 Aptabase 接入的设计与实现计划文档(`docs/superpowers/`)。/ Added Aptabase design and implementation-plan docs under `docs/superpowers/`.
+
+---
+
 ## [0.16.0] - 2026-06-10
 
 Minor 版本:技术栈收敛 + 应用内自动更新。废弃 egui 双轨,全面对齐姊妹项目 IEC60870-5-104-Simulator 的纯 Tauri 2 + Vue 3 架构;移植其成熟的自动更新机制(检查 / 弹窗 / 下载 / 安装 / 重启,多代理容灾 + minisign 签名)。
