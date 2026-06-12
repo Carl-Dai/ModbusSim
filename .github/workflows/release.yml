@@ -115,6 +115,12 @@ jobs:
   publish-manifest:
     needs: release
     runs-on: ubuntu-latest
+    # Needs write access so the GITHUB_TOKEN can list the draft release (drafts
+    # are only visible to tokens with push access) and PATCH it to published.
+    # Without this the "clear draft flag" step's release lookup returns empty
+    # and the job fails with "draft release not found".
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
