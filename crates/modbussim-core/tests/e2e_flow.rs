@@ -395,9 +395,7 @@ async fn e2e_exception_codes_full() {
     }
 
     // (b) FC04 qty=200 同理（FC04 上限 125）
-    let res = master
-        .read(ReadFunction::ReadInputRegisters, 0, 200)
-        .await;
+    let res = master.read(ReadFunction::ReadInputRegisters, 0, 200).await;
     step!("EXC IDV", "FC04 qty=200 -> {:?}", res);
     assert!(matches!(
         res,
@@ -873,7 +871,10 @@ async fn e2e_concurrent_read_write() {
     master.stop_scan_group("g_cc").await.ok();
     let (ok, err) = collector.await.unwrap_or((0, 0));
     step!("CC POLL", "ok={} err={}", ok, err);
-    assert!(ok >= 3, "scan group should have produced ≥3 events, got {ok}");
+    assert!(
+        ok >= 3,
+        "scan group should have produced ≥3 events, got {ok}"
+    );
     assert_eq!(err, 0, "scan group had {err} errors");
 
     master.disconnect().await.ok();

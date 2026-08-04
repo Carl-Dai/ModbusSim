@@ -202,19 +202,19 @@ impl MasterConnection {
             Transport::Rtu(serial_config) => {
                 let rtu = RtuMasterTransport::connect(serial_config)
                     .await
-                    .map_err(|e| MasterError::ConnectionFailed(e))?;
+                    .map_err(MasterError::ConnectionFailed)?;
                 TransportCtx::Rtu(Arc::new(rtu))
             }
             Transport::Ascii(serial_config) => {
                 let ascii = AsciiMasterTransport::connect(serial_config)
                     .await
-                    .map_err(|e| MasterError::ConnectionFailed(e))?;
+                    .map_err(MasterError::ConnectionFailed)?;
                 TransportCtx::Ascii(Arc::new(ascii))
             }
             Transport::RtuOverTcp { host, port } => {
                 let rtu_tcp = RtuTcpMasterTransport::connect(host, *port, timeout)
                     .await
-                    .map_err(|e| MasterError::ConnectionFailed(e))?;
+                    .map_err(MasterError::ConnectionFailed)?;
                 TransportCtx::RtuTcp(Arc::new(rtu_tcp))
             }
             Transport::TcpTls { host, port } => {
@@ -236,13 +236,11 @@ impl MasterConnection {
         // reference to the transport context.
         self.stop_all_scans().await;
 
-        if let Some(ctx) = self.transport_ctx.take() {
-            if let TransportCtx::Tcp(tcp_ctx) = ctx {
-                let mut ctx = tcp_ctx.lock().await;
-                let _ = ctx.disconnect().await;
-            }
-            // RTU/ASCII/RtuTcp: transport is dropped, which closes the port/stream.
+        if let Some(TransportCtx::Tcp(tcp_ctx)) = self.transport_ctx.take() {
+            let mut ctx = tcp_ctx.lock().await;
+            let _ = ctx.disconnect().await;
         }
+        // RTU/ASCII/RtuTcp: transport is dropped, which closes the port/stream.
         self.state = MasterState::Disconnected;
         Ok(())
     }
@@ -353,7 +351,7 @@ impl MasterConnection {
                     .await
                     .map_err(|_| MasterError::Timeout("Write single coil timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             }
             TransportCtx::TcpTls(tls) => {
                 tls.write_single_coil(self.config.slave_id, address, value, timeout)
@@ -388,7 +386,7 @@ impl MasterConnection {
                     .await
                     .map_err(|_| MasterError::Timeout("Write single register timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             }
             TransportCtx::TcpTls(tls) => {
                 tls.write_single_register(self.config.slave_id, address, value, timeout)
@@ -426,7 +424,7 @@ impl MasterConnection {
                     .await
                     .map_err(|_| MasterError::Timeout("Write multiple coils timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             }
             TransportCtx::TcpTls(tls) => {
                 tls.write_multiple_coils(self.config.slave_id, address, values, timeout)
@@ -434,7 +432,7 @@ impl MasterConnection {
             }
             other => {
                 let quantity = values.len() as u16;
-                let byte_count = (values.len() + 7) / 8;
+                let byte_count = values.len().div_ceil(8);
                 let mut coil_bytes = vec![0u8; byte_count];
                 for (i, &v) in values.iter().enumerate() {
                     if v {
@@ -474,7 +472,7 @@ impl MasterConnection {
                     .await
                     .map_err(|_| MasterError::Timeout("Write multiple registers timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             }
             TransportCtx::TcpTls(tls) => {
                 tls.write_multiple_registers(self.config.slave_id, address, values, timeout)
@@ -756,15 +754,15 @@ async fn send_pdu_via_transport(
         TransportCtx::Rtu(t) => t
             .request(slave_id, pdu, timeout)
             .await
-            .map_err(|e| MasterError::Transport(e)),
+            .map_err(MasterError::Transport),
         TransportCtx::Ascii(t) => t
             .request(slave_id, pdu, timeout)
             .await
-            .map_err(|e| MasterError::Transport(e)),
+            .map_err(MasterError::Transport),
         TransportCtx::RtuTcp(t) => t
             .request(slave_id, pdu, timeout)
             .await
-            .map_err(|e| MasterError::Transport(e)),
+            .map_err(MasterError::Transport),
         TransportCtx::Tcp(_) => Err(MasterError::Transport(
             "send_pdu_via_transport called for TCP".into(),
         )),
@@ -810,7 +808,7 @@ async fn execute_read_tcp(
                 .await
                 .map_err(|_| MasterError::Timeout("Read timed out".into()))?
                 .map_err(|e| MasterError::Transport(format!("{e}")))?
-                .map_err(|e| MasterError::Exception(e))?;
+                .map_err(MasterError::Exception)?;
             Ok(ReadResult::Coils(data))
         }
         ReadFunction::ReadDiscreteInputs => {
@@ -819,7 +817,7 @@ async fn execute_read_tcp(
                     .await
                     .map_err(|_| MasterError::Timeout("Read timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             Ok(ReadResult::DiscreteInputs(data))
         }
         ReadFunction::ReadHoldingRegisters => {
@@ -828,7 +826,7 @@ async fn execute_read_tcp(
                     .await
                     .map_err(|_| MasterError::Timeout("Read timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             Ok(ReadResult::HoldingRegisters(data))
         }
         ReadFunction::ReadInputRegisters => {
@@ -837,7 +835,7 @@ async fn execute_read_tcp(
                     .await
                     .map_err(|_| MasterError::Timeout("Read timed out".into()))?
                     .map_err(|e| MasterError::Transport(format!("{e}")))?
-                    .map_err(|e| MasterError::Exception(e))?;
+                    .map_err(MasterError::Exception)?;
             Ok(ReadResult::InputRegisters(data))
         }
     }
@@ -964,10 +962,10 @@ pub async fn scan_slave_ids_with_ctx(
         let found = {
             let mut ctx = ctx.lock().await;
             ctx.set_slave(Slave(id));
-            match tokio::time::timeout(scan_timeout, ctx.read_holding_registers(0, 1)).await {
-                Ok(Ok(Ok(_))) => true,
-                _ => false,
-            }
+            matches!(
+                tokio::time::timeout(scan_timeout, ctx.read_holding_registers(0, 1)).await,
+                Ok(Ok(Ok(_)))
+            )
         };
 
         if found {
@@ -1006,6 +1004,7 @@ pub async fn scan_slave_ids_with_ctx(
 }
 
 /// Scan a register address range using an existing TCP context.
+#[allow(clippy::too_many_arguments)]
 pub async fn scan_registers_with_ctx(
     ctx: Arc<Mutex<client::Context>>,
     function: ReadFunction,

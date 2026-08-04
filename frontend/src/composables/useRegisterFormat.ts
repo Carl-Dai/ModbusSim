@@ -22,6 +22,20 @@ export interface MutationConfig {
   max: number
 }
 
+export type DataSource =
+  | { type: 'fixed'; value: number }
+  | { type: 'random'; min: number; max: number }
+  | { type: 'sine'; amplitude: number; frequency: number; offset: number; phase: number }
+  | { type: 'sawtooth'; min: number; max: number; period_ms: number }
+  | { type: 'triangle'; min: number; max: number; period_ms: number }
+  | { type: 'counter'; start: number; step: number; wrap: boolean }
+  | { type: 'csv_playback'; values: number[]; loop_playback: boolean }
+
+export interface DataSourceConfig {
+  source: DataSource
+  update_interval_ms: number
+}
+
 export interface RegisterDef {
   address: number
   register_type: string
@@ -30,6 +44,7 @@ export interface RegisterDef {
   name: string
   comment: string
   mutation?: MutationConfig | null
+  data_source?: DataSourceConfig | null
 }
 
 /** Info returned by `list_point_mutations` for active (enabled) points. */

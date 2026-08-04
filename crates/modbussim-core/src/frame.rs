@@ -99,6 +99,7 @@ pub fn encode_ascii(slave_id: u8, pdu: &[u8]) -> Vec<u8> {
 ///
 /// Validates ':' prefix and CRLF suffix, hex-decodes the body, verifies LRC,
 /// then extracts slave_id and PDU.
+#[allow(clippy::manual_is_multiple_of)] // Keep compatibility with Rust 1.77.
 pub fn decode_ascii(data: &[u8]) -> Result<AsciiFrame, String> {
     // Validate framing characters.
     if data.first() != Some(&b':') {

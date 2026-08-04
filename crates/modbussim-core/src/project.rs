@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::config::RegisterValues;
+use crate::reconnect::ReconnectPolicy;
 use crate::register::RegisterDef;
+use crate::transport::{SlaveTlsConfig, TlsConfig};
 
 /// Project type: slave or master.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +22,14 @@ pub enum TransportConfig {
     Tcp {
         host: String,
         port: u16,
+    },
+    TcpTls {
+        host: String,
+        port: u16,
+        #[serde(default)]
+        client_tls: Box<TlsConfig>,
+        #[serde(default)]
+        server_tls: Box<SlaveTlsConfig>,
     },
     Rtu {
         port: String,
@@ -67,6 +78,9 @@ pub struct DeviceConfig {
     pub register_defs: Vec<RegisterDef>,
     #[serde(default)]
     pub registers: RegistersConfig,
+    /// Current raw values for all four Modbus areas.
+    #[serde(default)]
+    pub values: RegisterValues,
 }
 
 /// Register configuration grouped by type.
@@ -85,12 +99,20 @@ pub struct RegistersConfig {
 /// A scan group definition (master project only).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanGroupConfig {
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub slave_id: u8,
     pub function_code: u8,
     pub start_address: u16,
     pub count: u16,
     pub interval_ms: u64,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 /// A connection definition in a project file.
@@ -103,6 +125,20 @@ pub struct ConnectionConfig {
     pub devices: Vec<DeviceConfig>,
     #[serde(default)]
     pub scan_groups: Vec<ScanGroupConfig>,
+    #[serde(default = "default_slave_id")]
+    pub default_slave_id: u8,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub reconnect_policy: ReconnectPolicy,
+}
+
+fn default_slave_id() -> u8 {
+    1
+}
+
+fn default_timeout_ms() -> u64 {
+    3000
 }
 
 /// The top-level project file structure.
@@ -168,6 +204,7 @@ pub fn migrate_project(data: &str) -> Result<ProjectFile, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_source::{DataSource, DataSourceConfig};
     use crate::mutation::{MutationConfig, MutationMode};
     use crate::register::{DataType, Endian, RegisterType};
     use tempfile::TempDir;
@@ -216,8 +253,12 @@ mod tests {
                     }],
                     ..Default::default()
                 },
+                values: RegisterValues::default(),
             }],
             scan_groups: vec![],
+            default_slave_id: 1,
+            timeout_ms: 3000,
+            reconnect_policy: ReconnectPolicy::default(),
         });
 
         save_project(&project, &path).unwrap();
@@ -270,13 +311,18 @@ mod tests {
             },
             devices: vec![],
             scan_groups: vec![ScanGroupConfig {
+                id: "fast-poll".into(),
                 name: "Fast Poll".into(),
                 slave_id: 1,
                 function_code: 3,
                 start_address: 0,
                 count: 10,
                 interval_ms: 1000,
+                enabled: true,
             }],
+            default_slave_id: 1,
+            timeout_ms: 3000,
+            reconnect_policy: ReconnectPolicy::default(),
         });
 
         save_project(&project, &path).unwrap();
@@ -328,10 +374,15 @@ mod tests {
                         min: 0.0,
                         max: 10.0,
                     }),
+                    data_source: None,
                 }],
                 registers: RegistersConfig::default(),
+                values: RegisterValues::default(),
             }],
             scan_groups: vec![],
+            default_slave_id: 1,
+            timeout_ms: 3000,
+            reconnect_policy: ReconnectPolicy::default(),
         });
 
         save_project(&project, &path).unwrap();
@@ -407,6 +458,9 @@ mod tests {
             },
             devices: vec![],
             scan_groups: vec![],
+            default_slave_id: 1,
+            timeout_ms: 3000,
+            reconnect_policy: ReconnectPolicy::default(),
         });
 
         let json = serde_json::to_string(&project).unwrap();
@@ -439,6 +493,9 @@ mod tests {
                 },
                 devices: vec![],
                 scan_groups: vec![],
+                default_slave_id: 1,
+                timeout_ms: 3000,
+                reconnect_policy: ReconnectPolicy::default(),
             }],
         };
         let json = serde_json::to_string(&proj).unwrap();
@@ -472,5 +529,81 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn tls_values_and_data_source_survive_roundtrip() {
+        let server_tls = SlaveTlsConfig {
+            enabled: true,
+            cert_file: "server.pem".to_string(),
+            ..Default::default()
+        };
+        let client_tls = TlsConfig {
+            enabled: true,
+            ca_file: "ca.pem".to_string(),
+            ..Default::default()
+        };
+        let definition = RegisterDef {
+            address: 7,
+            register_type: RegisterType::HoldingRegister,
+            data_type: DataType::UInt16,
+            endian: Endian::Big,
+            name: "generated".to_string(),
+            comment: String::new(),
+            mutation: None,
+            data_source: Some(DataSourceConfig {
+                source: DataSource::Counter {
+                    start: 12,
+                    step: 2,
+                    wrap: true,
+                },
+                update_interval_ms: 250,
+            }),
+        };
+        let project = ProjectFile {
+            version: 1,
+            project_type: ProjectType::Slave,
+            connections: vec![ConnectionConfig {
+                id: "tls".to_string(),
+                name: "TLS".to_string(),
+                transport: TransportConfig::TcpTls {
+                    host: "127.0.0.1".to_string(),
+                    port: 802,
+                    client_tls: Box::new(client_tls.clone()),
+                    server_tls: Box::new(server_tls.clone()),
+                },
+                devices: vec![DeviceConfig {
+                    slave_id: 1,
+                    name: "device".to_string(),
+                    register_defs: vec![definition],
+                    registers: RegistersConfig::default(),
+                    values: RegisterValues {
+                        holding_registers: vec![(7, 42)],
+                        ..Default::default()
+                    },
+                }],
+                scan_groups: vec![],
+                default_slave_id: 1,
+                timeout_ms: 3000,
+                reconnect_policy: ReconnectPolicy::default(),
+            }],
+        };
+
+        let json = serde_json::to_string(&project).unwrap();
+        let loaded: ProjectFile = serde_json::from_str(&json).unwrap();
+        match &loaded.connections[0].transport {
+            TransportConfig::TcpTls {
+                client_tls: loaded_client,
+                server_tls: loaded_server,
+                ..
+            } => {
+                assert_eq!(loaded_client.as_ref(), &client_tls);
+                assert_eq!(loaded_server.as_ref(), &server_tls);
+            }
+            _ => panic!("wrong transport variant"),
+        }
+        let device = &loaded.connections[0].devices[0];
+        assert_eq!(device.values.holding_registers, vec![(7, 42)]);
+        assert!(device.register_defs[0].data_source.is_some());
     }
 }

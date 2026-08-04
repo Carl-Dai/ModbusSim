@@ -106,7 +106,7 @@ impl TlsMasterConnection {
         _timeout: Duration,
     ) -> Result<(), MasterError> {
         let quantity = values.len() as u16;
-        let byte_count = (values.len() + 7) / 8;
+        let byte_count = values.len().div_ceil(8);
         let mut coil_bytes = vec![0u8; byte_count];
         for (i, &v) in values.iter().enumerate() {
             if v {

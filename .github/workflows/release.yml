@@ -42,13 +42,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
 
-      # --- Install all frontend dependencies (npm workspaces) ---
-      # Delete lockfile so npm resolves platform-specific optional deps (rolldown bindings) for the current CI runner
+      # --- Install all frontend dependencies from the reviewed workspace lockfile ---
       - name: Install frontend dependencies
-        shell: bash
-        run: |
-          rm -f package-lock.json
-          npm install
+        run: npm ci --ignore-scripts
 
       # --- ModbusSlave ---
       - name: Build slave frontend

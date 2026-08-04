@@ -81,13 +81,11 @@ async fn main() {
 
     // Step 6: Receive poll data (simulates the bridge task + frontend display)
     println!("[6/7] Receiving poll data (3 cycles)...");
-    let mut last_values = vec![];
     for i in 0..3 {
         if let Some(event) = rx.recv().await {
             match event {
                 PollEvent::Data(ReadResult::HoldingRegisters(vals)) => {
                     println!("       Cycle {}: {:?}", i + 1, vals);
-                    last_values = vals;
                 }
                 PollEvent::Error(e) => {
                     println!("       Cycle {} ERROR: {}", i + 1, e);

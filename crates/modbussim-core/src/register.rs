@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 /// Modbus register types (four areas)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegisterType {
     /// 0x - read/write single bit
@@ -41,8 +41,10 @@ impl DataType {
 /// Byte order for multi-register data types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Endian {
     /// AB CD (most common)
+    #[default]
     Big,
     /// CD AB
     Little,
@@ -50,12 +52,6 @@ pub enum Endian {
     MidBig,
     /// DC BA
     MidLittle,
-}
-
-impl Default for Endian {
-    fn default() -> Self {
-        Endian::Big
-    }
 }
 
 /// Metadata definition for a register (used for UI display and config export)
@@ -73,6 +69,9 @@ pub struct RegisterDef {
     /// Per-point random mutation config; `None` = not configured. Persisted.
     #[serde(default)]
     pub mutation: Option<crate::mutation::MutationConfig>,
+    /// Optional generated-value source for this point. Persisted.
+    #[serde(default)]
+    pub data_source: Option<crate::data_source::DataSourceConfig>,
 }
 
 /// Inclusive address range occupied by a point definition. Bit areas always
@@ -101,6 +100,54 @@ pub fn register_definitions_overlap(left: &RegisterDef, right: &RegisterDef) -> 
         return true;
     };
     left_start <= right_end && right_start <= left_end
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RegisterDefinitionError {
+    #[error("register {register_type:?}@{address} exceeds address 65535")]
+    AddressOverflow {
+        register_type: RegisterType,
+        address: u16,
+    },
+    #[error("register {register_type:?}@{address} overlaps point at address {other_address}")]
+    Overlap {
+        register_type: RegisterType,
+        address: u16,
+        other_address: u16,
+    },
+}
+
+/// Validate a complete point-definition set in O(n log n) time.
+///
+/// Definitions are sorted by Modbus area and occupied address, so only
+/// adjacent ranges within an area need to be compared for overlap.
+pub fn validate_register_definitions(
+    definitions: &[RegisterDef],
+) -> Result<(), RegisterDefinitionError> {
+    let mut ranges = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let Some((start, end)) = occupied_address_range(definition) else {
+            return Err(RegisterDefinitionError::AddressOverflow {
+                register_type: definition.register_type,
+                address: definition.address,
+            });
+        };
+        ranges.push((definition.register_type, start, end));
+    }
+    ranges.sort_unstable();
+
+    for pair in ranges.windows(2) {
+        let (register_type, start, end) = pair[0];
+        let (other_type, other_start, _) = pair[1];
+        if register_type == other_type && other_start <= end {
+            return Err(RegisterDefinitionError::Overlap {
+                register_type,
+                address: start,
+                other_address: other_start,
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -182,19 +229,35 @@ impl RegisterMap {
     // --- Address validation ---
 
     pub fn has_all_coils(&self, start: u16, count: u16) -> bool {
-        (start..start + count).all(|a| self.coils.contains_key(&a))
+        (0..count).all(|offset| {
+            start
+                .checked_add(offset)
+                .is_some_and(|address| self.coils.contains_key(&address))
+        })
     }
 
     pub fn has_all_discrete_inputs(&self, start: u16, count: u16) -> bool {
-        (start..start + count).all(|a| self.discrete_inputs.contains_key(&a))
+        (0..count).all(|offset| {
+            start
+                .checked_add(offset)
+                .is_some_and(|address| self.discrete_inputs.contains_key(&address))
+        })
     }
 
     pub fn has_all_holding_registers(&self, start: u16, count: u16) -> bool {
-        (start..start + count).all(|a| self.holding_registers.contains_key(&a))
+        (0..count).all(|offset| {
+            start
+                .checked_add(offset)
+                .is_some_and(|address| self.holding_registers.contains_key(&address))
+        })
     }
 
     pub fn has_all_input_registers(&self, start: u16, count: u16) -> bool {
-        (start..start + count).all(|a| self.input_registers.contains_key(&a))
+        (0..count).all(|offset| {
+            start
+                .checked_add(offset)
+                .is_some_and(|address| self.input_registers.contains_key(&address))
+        })
     }
 
     pub fn has_coil(&self, addr: u16) -> bool {
@@ -230,6 +293,120 @@ impl RegisterMap {
                 }
                 RegisterType::InputRegister => {
                     self.input_registers.entry(addr).or_insert(0);
+                }
+            }
+        }
+    }
+
+    /// Remove every raw address occupied by a point definition.
+    pub fn remove_from_def(&mut self, def: &RegisterDef) {
+        let Some((start, end)) = occupied_address_range(def) else {
+            return;
+        };
+        for address in start..=end {
+            match def.register_type {
+                RegisterType::Coil => {
+                    self.coils.remove(&address);
+                }
+                RegisterType::DiscreteInput => {
+                    self.discrete_inputs.remove(&address);
+                }
+                RegisterType::HoldingRegister => {
+                    self.holding_registers.remove(&address);
+                }
+                RegisterType::InputRegister => {
+                    self.input_registers.remove(&address);
+                }
+            }
+        }
+    }
+
+    /// Replace a point's occupied raw range while preserving as many raw
+    /// values as possible when the Modbus area is unchanged.
+    pub fn replace_def(&mut self, original: &RegisterDef, replacement: &RegisterDef) {
+        let old_range = occupied_address_range(original);
+        let bool_values = if original.register_type == replacement.register_type
+            && matches!(
+                original.register_type,
+                RegisterType::Coil | RegisterType::DiscreteInput
+            ) {
+            old_range.map(|(start, end)| {
+                (start..=end)
+                    .map(|address| match original.register_type {
+                        RegisterType::Coil => self.coils.get(&address).copied().unwrap_or(false),
+                        RegisterType::DiscreteInput => {
+                            self.discrete_inputs.get(&address).copied().unwrap_or(false)
+                        }
+                        _ => unreachable!(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+        } else {
+            None
+        };
+        let word_values = if original.register_type == replacement.register_type
+            && matches!(
+                original.register_type,
+                RegisterType::HoldingRegister | RegisterType::InputRegister
+            ) {
+            old_range.map(|(start, end)| {
+                (start..=end)
+                    .map(|address| match original.register_type {
+                        RegisterType::HoldingRegister => {
+                            self.holding_registers.get(&address).copied().unwrap_or(0)
+                        }
+                        RegisterType::InputRegister => {
+                            self.input_registers.get(&address).copied().unwrap_or(0)
+                        }
+                        _ => unreachable!(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+        } else {
+            None
+        };
+
+        self.remove_from_def(original);
+        self.ensure_from_def(replacement);
+
+        if let Some(values) = bool_values {
+            for (offset, value) in values.into_iter().enumerate() {
+                let Some(address) = replacement.address.checked_add(offset as u16) else {
+                    break;
+                };
+                match replacement.register_type {
+                    RegisterType::Coil => {
+                        if let Some(slot) = self.coils.get_mut(&address) {
+                            *slot = value;
+                        }
+                    }
+                    RegisterType::DiscreteInput => {
+                        if let Some(slot) = self.discrete_inputs.get_mut(&address) {
+                            *slot = value;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        if let Some(values) = word_values {
+            let replacement_count = replacement.data_type.register_count() as usize;
+            for (offset, value) in values.into_iter().take(replacement_count).enumerate() {
+                let Some(address) = replacement.address.checked_add(offset as u16) else {
+                    break;
+                };
+                match replacement.register_type {
+                    RegisterType::HoldingRegister => {
+                        if let Some(slot) = self.holding_registers.get_mut(&address) {
+                            *slot = value;
+                        }
+                    }
+                    RegisterType::InputRegister => {
+                        if let Some(slot) = self.input_registers.get_mut(&address) {
+                            *slot = value;
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
         }
@@ -403,6 +580,7 @@ mod tests {
             name: String::new(),
             comment: String::new(),
             mutation: None,
+            data_source: None,
         };
         let wide = make(100, DataType::Float32);
         assert_eq!(occupied_address_range(&wide), Some((100, 101)));
@@ -418,6 +596,39 @@ mod tests {
             occupied_address_range(&make(u16::MAX, DataType::UInt32)),
             None
         );
+    }
+
+    #[test]
+    fn validates_eighty_thousand_points_without_quadratic_scan() {
+        let mut definitions = Vec::with_capacity(80_004);
+        for address in 0..=20_000 {
+            for register_type in [
+                RegisterType::Coil,
+                RegisterType::DiscreteInput,
+                RegisterType::HoldingRegister,
+                RegisterType::InputRegister,
+            ] {
+                definitions.push(RegisterDef {
+                    address,
+                    register_type,
+                    data_type: if matches!(
+                        register_type,
+                        RegisterType::Coil | RegisterType::DiscreteInput
+                    ) {
+                        DataType::Bool
+                    } else {
+                        DataType::UInt16
+                    },
+                    endian: Endian::Big,
+                    name: String::new(),
+                    comment: String::new(),
+                    mutation: None,
+                    data_source: None,
+                });
+            }
+        }
+        assert_eq!(definitions.len(), 80_004);
+        assert!(validate_register_definitions(&definitions).is_ok());
     }
 
     // --- Encode/Decode round-trip tests ---
@@ -534,5 +745,35 @@ mod tests {
         let mut map = RegisterMap::new();
         map.write_coils(0, &[true, false, true, true]);
         assert_eq!(map.read_coils(0, 4), vec![true, false, true, true]);
+    }
+
+    #[test]
+    fn remove_and_replace_definition_update_raw_address_lifecycle() {
+        let original = RegisterDef {
+            address: 10,
+            register_type: RegisterType::HoldingRegister,
+            data_type: DataType::UInt32,
+            endian: Endian::Big,
+            name: String::new(),
+            comment: String::new(),
+            mutation: None,
+            data_source: None,
+        };
+        let replacement = RegisterDef {
+            address: 20,
+            data_type: DataType::UInt16,
+            ..original.clone()
+        };
+        let mut map = RegisterMap::new();
+        map.ensure_from_def(&original);
+        map.write_holding_registers(10, &[0x1234, 0x5678]);
+
+        map.replace_def(&original, &replacement);
+        assert!(!map.has_holding_register(10));
+        assert!(!map.has_holding_register(11));
+        assert_eq!(map.holding_registers.get(&20), Some(&0x1234));
+
+        map.remove_from_def(&replacement);
+        assert!(!map.has_holding_register(20));
     }
 }

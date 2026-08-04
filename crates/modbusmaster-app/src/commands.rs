@@ -3,9 +3,9 @@
 use modbussim_core::project::{self, ProjectFile};
 
 use crate::state::{
-    AppState, CachedPollData, ConnectionStateEvent, FoundRegisterDto, LogAppendedEvent, MasterConnectionInfo,
-    MasterConnectionState, PollDataPayload, PollErrorPayload, ReadResultDto, RegisterScanEvent,
-    RegisterValueDto, ScanGroupInfo, SlaveIdScanEvent,
+    AppState, CachedPollData, ConnectionStateEvent, FoundRegisterDto, LogAppendedEvent,
+    MasterConnectionInfo, MasterConnectionState, PollDataPayload, PollErrorPayload, ReadResultDto,
+    RegisterScanEvent, RegisterValueDto, ScanGroupInfo, SlaveIdScanEvent,
 };
 use modbussim_core::log_collector::LogCollector;
 use modbussim_core::log_entry::LogEntry;
@@ -14,8 +14,8 @@ use modbussim_core::master::{
     scan_registers_with_ctx, scan_slave_ids_with_ctx, MasterConfig, MasterConnection, MasterState,
     ReadFunction, ReadResult, ScanGroup,
 };
-use modbussim_core::reconnect::ReconnectPolicy;
 use modbussim_core::parse::{parse_read_function, read_function_to_string};
+use modbussim_core::reconnect::ReconnectPolicy;
 use modbussim_core::tools;
 use modbussim_core::transport::{self, Parity, SerialConfig, TlsConfig, Transport};
 use serde::{Deserialize, Serialize};
@@ -250,7 +250,6 @@ pub async fn create_master_connection(
             pkcs12_password: request.pkcs12_password.unwrap_or_default(),
             accept_invalid_certs: request.accept_invalid_certs.unwrap_or(false),
         },
-        ..Default::default()
     };
 
     let log_collector = Arc::new(LogCollector::new());
@@ -309,7 +308,9 @@ fn emit_state(app: &AppHandle, conn_id: &str, tag: &str) {
 /// the user explicitly disconnects or deletes the connection so that the
 /// auto-reconnect loop does not race with manual control.
 async fn abort_supervisor(
-    master_conns: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, MasterConnectionState>>>,
+    master_conns: &Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, MasterConnectionState>>,
+    >,
     conn_id: &str,
 ) {
     let handle_slot = {
@@ -329,7 +330,9 @@ async fn abort_supervisor(
 /// aborted (manual disconnect/delete) or the policy gives up.
 async fn run_supervisor(
     app: AppHandle,
-    master_conns: Arc<tokio::sync::RwLock<std::collections::HashMap<String, MasterConnectionState>>>,
+    master_conns: Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, MasterConnectionState>>,
+    >,
     conn_id: String,
     mut lost_rx: broadcast::Receiver<()>,
 ) {
@@ -462,12 +465,16 @@ pub async fn connect_master(
         // Wire log-append push to frontend so LogPanel doesn't have to poll.
         let log_handle = app.clone();
         let log_conn_id = connection_id.clone();
-        conn_state.log_collector.set_append_callback(std::sync::Arc::new(move |_entry| {
-            let _ = log_handle.emit(
-                "log-appended",
-                LogAppendedEvent { connection_id: log_conn_id.clone() },
-            );
-        }));
+        conn_state
+            .log_collector
+            .set_append_callback(std::sync::Arc::new(move |_entry| {
+                let _ = log_handle.emit(
+                    "log-appended",
+                    LogAppendedEvent {
+                        connection_id: log_conn_id.clone(),
+                    },
+                );
+            }));
 
         (
             conn_state.connection.subscribe_connection_lost(),
@@ -1398,9 +1405,11 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
             ),
             Transport::TcpTls { host, port } => (
                 format!("tls://{}:{}", host, port),
-                project::TransportConfig::Tcp {
+                project::TransportConfig::TcpTls {
                     host: host.clone(),
                     port: *port,
+                    client_tls: Box::new(config.tls.clone()),
+                    server_tls: Default::default(),
                 },
             ),
         };
@@ -1413,14 +1422,19 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
                 .scan_groups
                 .iter()
                 .map(|sg| project::ScanGroupConfig {
+                    id: sg.id.clone(),
                     name: sg.name.clone(),
                     slave_id: sg.slave_id.unwrap_or(config.slave_id),
                     function_code: read_function_to_fc(sg.function),
                     start_address: sg.start_address,
                     count: sg.quantity,
                     interval_ms: sg.interval_ms,
+                    enabled: sg.enabled,
                 })
                 .collect(),
+            default_slave_id: config.slave_id,
+            timeout_ms: config.timeout_ms,
+            reconnect_policy: conn_state.connection.reconnect_policy.clone(),
         };
         proj.connections.push(conn_config);
     }
@@ -1428,9 +1442,199 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
     project::save_project(&proj, std::path::Path::new(&path))
 }
 
+fn read_function_from_fc(function_code: u8) -> Result<ReadFunction, String> {
+    match function_code {
+        1 => Ok(ReadFunction::ReadCoils),
+        2 => Ok(ReadFunction::ReadDiscreteInputs),
+        3 => Ok(ReadFunction::ReadHoldingRegisters),
+        4 => Ok(ReadFunction::ReadInputRegisters),
+        _ => Err(format!("unsupported read function code {function_code}")),
+    }
+}
+
+fn master_transport_from_project(
+    transport: project::TransportConfig,
+) -> (Transport, TlsConfig, String, u16) {
+    match transport {
+        project::TransportConfig::Tcp { host, port } => (
+            Transport::Tcp {
+                host: host.clone(),
+                port,
+            },
+            TlsConfig::default(),
+            host,
+            port,
+        ),
+        project::TransportConfig::TcpTls {
+            host,
+            port,
+            client_tls,
+            ..
+        } => (
+            Transport::TcpTls {
+                host: host.clone(),
+                port,
+            },
+            *client_tls,
+            host,
+            port,
+        ),
+        project::TransportConfig::RtuOverTcp { host, port } => (
+            Transport::RtuOverTcp {
+                host: host.clone(),
+                port,
+            },
+            TlsConfig::default(),
+            host,
+            port,
+        ),
+        project::TransportConfig::Rtu {
+            port,
+            baud_rate,
+            data_bits,
+            stop_bits,
+            parity,
+        } => {
+            let serial = SerialConfig {
+                port: port.clone(),
+                baud_rate,
+                data_bits,
+                stop_bits,
+                parity: parse_parity(&parity),
+            };
+            (Transport::Rtu(serial), TlsConfig::default(), port, 0)
+        }
+        project::TransportConfig::Ascii {
+            port,
+            baud_rate,
+            data_bits,
+            stop_bits,
+            parity,
+        } => {
+            let serial = SerialConfig {
+                port: port.clone(),
+                baud_rate,
+                data_bits,
+                stop_bits,
+                parity: parse_parity(&parity),
+            };
+            (Transport::Ascii(serial), TlsConfig::default(), port, 0)
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn load_project_file(path: String) -> Result<ProjectFile, String> {
-    project::load_project(std::path::Path::new(&path))
+pub async fn load_project_file(state: State<'_, AppState>, path: String) -> Result<usize, String> {
+    let project = project::load_project(std::path::Path::new(&path))?;
+    if project.project_type != project::ProjectType::Master {
+        return Err("project is not a master project".to_string());
+    }
+
+    let mut loaded = std::collections::HashMap::new();
+    let mut total_scan_groups = 0;
+    for config in project.connections {
+        if loaded.contains_key(&config.id) {
+            return Err(format!("duplicate connection id {}", config.id));
+        }
+        if !(1..=247).contains(&config.default_slave_id) {
+            return Err(format!(
+                "connection {} has invalid default slave ID {}",
+                config.id, config.default_slave_id
+            ));
+        }
+        let (transport, tls, target_address, port) =
+            master_transport_from_project(config.transport);
+        let master_config = MasterConfig {
+            target_address,
+            port,
+            slave_id: config.default_slave_id,
+            timeout_ms: config.timeout_ms.max(1),
+            tls,
+        };
+        let log_collector = Arc::new(LogCollector::new());
+        let mut connection = MasterConnection::new(master_config, transport)
+            .with_log_collector(log_collector.clone());
+        connection.reconnect_policy = config.reconnect_policy;
+        let mut scan_groups = Vec::with_capacity(config.scan_groups.len());
+        for scan in config.scan_groups {
+            let function = read_function_from_fc(scan.function_code)?;
+            let max_quantity = if matches!(
+                function,
+                ReadFunction::ReadCoils | ReadFunction::ReadDiscreteInputs
+            ) {
+                2000
+            } else {
+                125
+            };
+            if scan.count == 0
+                || scan.count > max_quantity
+                || (scan.start_address as u32 + scan.count as u32) > 65_536
+            {
+                return Err(format!("invalid scan group {} address or count", scan.name));
+            }
+            if scan.interval_ms == 0 || !(1..=247).contains(&scan.slave_id) {
+                return Err(format!(
+                    "invalid scan group {} interval or slave ID",
+                    scan.name
+                ));
+            }
+            scan_groups.push(ScanGroup {
+                id: if scan.id.is_empty() {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    scan.id
+                },
+                name: scan.name,
+                function,
+                start_address: scan.start_address,
+                quantity: scan.count,
+                interval_ms: scan.interval_ms,
+                enabled: scan.enabled,
+                slave_id: Some(scan.slave_id),
+            });
+            total_scan_groups += 1;
+        }
+        loaded.insert(
+            config.id,
+            MasterConnectionState {
+                connection,
+                scan_groups,
+                log_collector,
+                cached_data: std::collections::HashMap::new(),
+                reconnect_handle: Arc::new(Mutex::new(None)),
+            },
+        );
+    }
+
+    let active_scans = {
+        let mut scans = state.active_scans.write().await;
+        scans.drain().map(|(_, sender)| sender).collect::<Vec<_>>()
+    };
+    for sender in active_scans {
+        let _ = sender.send(());
+    }
+
+    let mut current = state.master_connections.write().await;
+    for connection in current.values_mut() {
+        if let Some(handle) = connection.reconnect_handle.lock().await.take() {
+            handle.abort();
+        }
+        connection
+            .connection
+            .disconnect()
+            .await
+            .map_err(|error| format!("failed to disconnect current connection: {error}"))?;
+    }
+    *current = loaded;
+    let next_id = current
+        .keys()
+        .filter_map(|id| id.strip_prefix("master_")?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    drop(current);
+    *state.next_conn_id.write().await = next_id;
+    Ok(total_scan_groups)
 }
 
 // ---------------------------------------------------------------------------

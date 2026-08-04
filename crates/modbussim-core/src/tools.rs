@@ -124,7 +124,7 @@ pub fn modbus_to_plc_address(address: u16, address_type: ModbusAddressType) -> u
 }
 
 /// Validate that a Modbus address is within valid range for the given type.
-pub fn validate_modbus_address(address: u16, _address_type: ModbusAddressType) -> bool {
+pub fn validate_modbus_address(_address: u16, _address_type: ModbusAddressType) -> bool {
     // All Modbus address types use 16-bit addresses (0 - 65535)
     true
 }
@@ -218,6 +218,7 @@ pub fn verify_lrc(data: &[u8]) -> bool {
 /// # Errors
 /// Returns `ToolsError::InvalidHex` if the string contains invalid hex characters
 /// or has an odd number of hex digits.
+#[allow(clippy::manual_is_multiple_of)] // Keep compatibility with Rust 1.77.
 pub fn parse_hex_string(s: &str) -> Result<Vec<u8>, ToolsError> {
     // Remove all whitespace and commas
     let cleaned: String = s
@@ -357,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_crc16_single_byte() {
-        let crc = crc16(&[0x01]);
+        let _crc = crc16(&[0x01]);
         // Verify by checking the roundtrip
         let with_crc = append_crc16(&[0x01]);
         assert!(verify_crc16(&with_crc));
@@ -397,7 +398,7 @@ mod tests {
     fn test_lrc_known_value() {
         // Using self-verification: the LRC of data should make verify_lrc pass
         let data = [0x01, 0x03, 0x00, 0x00, 0x00, 0x0A];
-        let computed_lrc = lrc(&data);
+        let _computed_lrc = lrc(&data);
         // Verify by appending and checking
         let with_lrc = append_lrc(&data);
         assert!(verify_lrc(&with_lrc));

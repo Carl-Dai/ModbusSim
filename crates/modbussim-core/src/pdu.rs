@@ -19,66 +19,85 @@ pub enum ResponseData {
     WriteMultiple { address: u16, quantity: u16 },
 }
 
-pub fn parse_request_pdu(pdu: &[u8]) -> Result<ModbusRequest, String> {
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PduParseError {
+    #[error("unsupported function code: 0x{0:02X}")]
+    UnsupportedFunction(u8),
+    #[error("illegal data value: {0}")]
+    IllegalDataValue(String),
+}
+
+impl PduParseError {
+    pub fn exception_code(&self) -> u8 {
+        match self {
+            Self::UnsupportedFunction(_) => 0x01,
+            Self::IllegalDataValue(_) => 0x03,
+        }
+    }
+}
+
+fn require_exact_len(fc: u8, data: &[u8], expected: usize) -> Result<(), PduParseError> {
+    if data.len() != expected {
+        return Err(PduParseError::IllegalDataValue(format!(
+            "FC{fc:02X}: expected {expected} bytes, got {}",
+            data.len()
+        )));
+    }
+    Ok(())
+}
+
+pub fn parse_request_pdu(pdu: &[u8]) -> Result<ModbusRequest, PduParseError> {
     if pdu.is_empty() {
-        return Err("PDU is empty".to_string());
+        return Err(PduParseError::IllegalDataValue("PDU is empty".to_string()));
     }
     let fc = pdu[0];
     let data = &pdu[1..];
     match fc {
         0x01 => {
-            if data.len() < 4 {
-                return Err(format!("FC01: expected 4 bytes, got {}", data.len()));
-            }
+            require_exact_len(fc, data, 4)?;
             Ok(ModbusRequest::ReadCoils {
                 address: u16::from_be_bytes([data[0], data[1]]),
                 quantity: u16::from_be_bytes([data[2], data[3]]),
             })
         }
         0x02 => {
-            if data.len() < 4 {
-                return Err(format!("FC02: expected 4 bytes, got {}", data.len()));
-            }
+            require_exact_len(fc, data, 4)?;
             Ok(ModbusRequest::ReadDiscreteInputs {
                 address: u16::from_be_bytes([data[0], data[1]]),
                 quantity: u16::from_be_bytes([data[2], data[3]]),
             })
         }
         0x03 => {
-            if data.len() < 4 {
-                return Err(format!("FC03: expected 4 bytes, got {}", data.len()));
-            }
+            require_exact_len(fc, data, 4)?;
             Ok(ModbusRequest::ReadHoldingRegisters {
                 address: u16::from_be_bytes([data[0], data[1]]),
                 quantity: u16::from_be_bytes([data[2], data[3]]),
             })
         }
         0x04 => {
-            if data.len() < 4 {
-                return Err(format!("FC04: expected 4 bytes, got {}", data.len()));
-            }
+            require_exact_len(fc, data, 4)?;
             Ok(ModbusRequest::ReadInputRegisters {
                 address: u16::from_be_bytes([data[0], data[1]]),
                 quantity: u16::from_be_bytes([data[2], data[3]]),
             })
         }
         0x05 => {
-            if data.len() < 4 {
-                return Err(format!("FC05: expected 4 bytes, got {}", data.len()));
-            }
+            require_exact_len(fc, data, 4)?;
             let address = u16::from_be_bytes([data[0], data[1]]);
             let raw = u16::from_be_bytes([data[2], data[3]]);
             let value = match raw {
                 0xFF00 => true,
                 0x0000 => false,
-                _ => return Err(format!("FC05: invalid coil value 0x{:04X}", raw)),
+                _ => {
+                    return Err(PduParseError::IllegalDataValue(format!(
+                        "FC05: invalid coil value 0x{raw:04X}"
+                    )))
+                }
             };
             Ok(ModbusRequest::WriteSingleCoil { address, value })
         }
         0x06 => {
-            if data.len() < 4 {
-                return Err(format!("FC06: expected 4 bytes, got {}", data.len()));
-            }
+            require_exact_len(fc, data, 4)?;
             Ok(ModbusRequest::WriteSingleRegister {
                 address: u16::from_be_bytes([data[0], data[1]]),
                 value: u16::from_be_bytes([data[2], data[3]]),
@@ -87,24 +106,27 @@ pub fn parse_request_pdu(pdu: &[u8]) -> Result<ModbusRequest, String> {
         0x0F => {
             // address(2) + quantity(2) + byte_count(1) + bytes
             if data.len() < 5 {
-                return Err(format!("FC0F: too short, got {}", data.len()));
+                return Err(PduParseError::IllegalDataValue(format!(
+                    "FC0F: too short, got {}",
+                    data.len()
+                )));
             }
             let address = u16::from_be_bytes([data[0], data[1]]);
             let quantity = u16::from_be_bytes([data[2], data[3]]) as usize;
             let byte_count = data[4] as usize;
-            if data.len() < 5 + byte_count {
-                return Err(format!("FC0F: byte_count mismatch"));
+            let expected_byte_count = quantity.div_ceil(8);
+            if byte_count != expected_byte_count || data.len() != 5 + byte_count {
+                return Err(PduParseError::IllegalDataValue(format!(
+                    "FC0F: byte count {byte_count}, expected {expected_byte_count}; payload length {}",
+                    data.len()
+                )));
             }
             let coil_bytes = &data[5..5 + byte_count];
             let mut values = Vec::with_capacity(quantity);
             for i in 0..quantity {
                 let byte_idx = i / 8;
                 let bit_idx = i % 8;
-                let bit = if byte_idx < coil_bytes.len() {
-                    (coil_bytes[byte_idx] >> bit_idx) & 1 == 1
-                } else {
-                    false
-                };
+                let bit = (coil_bytes[byte_idx] >> bit_idx) & 1 == 1;
                 values.push(bit);
             }
             Ok(ModbusRequest::WriteMultipleCoils { address, values })
@@ -112,20 +134,20 @@ pub fn parse_request_pdu(pdu: &[u8]) -> Result<ModbusRequest, String> {
         0x10 => {
             // address(2) + quantity(2) + byte_count(1) + words
             if data.len() < 5 {
-                return Err(format!("FC10: too short, got {}", data.len()));
+                return Err(PduParseError::IllegalDataValue(format!(
+                    "FC10: too short, got {}",
+                    data.len()
+                )));
             }
             let address = u16::from_be_bytes([data[0], data[1]]);
             let quantity = u16::from_be_bytes([data[2], data[3]]) as usize;
             let byte_count = data[4] as usize;
-            if data.len() < 5 + byte_count {
-                return Err(format!("FC10: byte_count mismatch"));
-            }
-            if byte_count != quantity * 2 {
-                return Err(format!(
-                    "FC10: byte_count {} != quantity*2 {}",
-                    byte_count,
-                    quantity * 2
-                ));
+            if byte_count != quantity * 2 || data.len() != 5 + byte_count {
+                return Err(PduParseError::IllegalDataValue(format!(
+                    "FC10: byte count {byte_count}, expected {}; payload length {}",
+                    quantity * 2,
+                    data.len()
+                )));
             }
             let reg_bytes = &data[5..5 + byte_count];
             let mut values = Vec::with_capacity(quantity);
@@ -134,14 +156,14 @@ pub fn parse_request_pdu(pdu: &[u8]) -> Result<ModbusRequest, String> {
             }
             Ok(ModbusRequest::WriteMultipleRegisters { address, values })
         }
-        _ => Err(format!("Unsupported function code: 0x{:02X}", fc)),
+        _ => Err(PduParseError::UnsupportedFunction(fc)),
     }
 }
 
 pub fn build_response_pdu(fc: u8, data: &ResponseData) -> Vec<u8> {
     match data {
         ResponseData::ReadBits(bits) => {
-            let byte_count = (bits.len() + 7) / 8;
+            let byte_count = bits.len().div_ceil(8);
             let mut packed = vec![0u8; byte_count];
             for (i, &bit) in bits.iter().enumerate() {
                 if bit {
@@ -264,7 +286,19 @@ mod tests {
     #[test]
     fn test_parse_unsupported_fc() {
         let result = parse_request_pdu(&[0x2B, 0x00]);
-        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().exception_code(), 0x01);
+    }
+
+    #[test]
+    fn malformed_supported_function_is_illegal_data_value() {
+        let extra_byte = parse_request_pdu(&[0x03, 0, 0, 0, 1, 0]).unwrap_err();
+        assert_eq!(extra_byte.exception_code(), 0x03);
+
+        let invalid_coil = parse_request_pdu(&[0x05, 0, 0, 0x12, 0x34]).unwrap_err();
+        assert_eq!(invalid_coil.exception_code(), 0x03);
+
+        let invalid_byte_count = parse_request_pdu(&[0x0F, 0, 0, 0, 9, 1, 0]).unwrap_err();
+        assert_eq!(invalid_byte_count.exception_code(), 0x03);
     }
 
     #[test]

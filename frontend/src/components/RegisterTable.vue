@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { float32ToU16Pair, useI18n, useFcLabel, formatAddress, showAlert, showConfirm, type ByteOrder } from 'shared-frontend'
 import RegisterModal from './RegisterModal.vue'
 import MutationConfigModal from './MutationConfigModal.vue'
+import DataSourceConfigModal from './DataSourceConfigModal.vue'
 import BatchAddModal from './BatchAddModal.vue'
 import { useRegisterValues } from '../composables/useRegisterValues'
 import {
@@ -29,7 +30,7 @@ const registerRefreshKey = inject<Ref<number>>('registerRefreshKey')!
 const {
   registers, registerValues, isLoading, error, changedKeys,
   loadRegisters, refreshValues, clearChangeTimers, getValue: getValueByKey,
-} = useRegisterValues(selectedConnectionId, selectedSlaveId)
+} = useRegisterValues(selectedConnectionId, selectedSlaveId, selectedRegisterType)
 
 const selectedRows = ref<Register[]>([])
 const lastClickedIndex = ref<number>(-1)
@@ -41,6 +42,17 @@ const addrMode = ref<'hex' | 'dec'>('hex')
 provide('addrMode', addrMode)
 const showAddModal = ref(false)
 const showBatchModal = ref(false)
+const showDataSourceModal = ref(false)
+const dataSourceTarget = ref<Register | undefined>(undefined)
+
+function openDataSource(reg: Register) {
+  dataSourceTarget.value = reg
+  showDataSourceModal.value = true
+}
+
+async function onDataSourceSaved() {
+  await loadRegisters()
+}
 
 type ColumnKey = 'address' | 'name' | 'value' | 'comment'
 const COLUMN_STORAGE_KEY = 'modbussim.registerTable.columnWidths.v1'
@@ -555,6 +567,12 @@ function toggleAddrMode() {
               @click.stop="openMutation(filteredRegisters[virtualRow.index])"
               :title="t('mutation.configure')"
             >{{ modeSymbol(pointMutationMode(filteredRegisters[virtualRow.index])) }}</button>
+            <button
+              class="source-badge"
+              :class="{ active: !!filteredRegisters[virtualRow.index].data_source }"
+              @click.stop="openDataSource(filteredRegisters[virtualRow.index])"
+              :title="t('dataSource.configure')"
+            >≈</button>
             {{ filteredRegisters[virtualRow.index].name || '-' }}
           </span>
           <span :class="['vcol', 'col-value', { wide: valueFormat === 'auto', 'value-highlight': changedKeys.has(`${filteredRegisters[virtualRow.index].register_type}-${filteredRegisters[virtualRow.index].address}`) }]" @dblclick.stop="startEdit(filteredRegisters[virtualRow.index])">
@@ -615,6 +633,15 @@ function toggleAddrMode() {
       :slave-id="selectedSlaveId ?? 0"
       @close="showMutationModal = false"
       @saved="onMutationSaved"
+    />
+
+    <DataSourceConfigModal
+      :show="showDataSourceModal"
+      :register="dataSourceTarget"
+      :connection-id="selectedConnectionId ?? ''"
+      :slave-id="selectedSlaveId ?? 0"
+      @close="showDataSourceModal = false"
+      @saved="onDataSourceSaved"
     />
 
     <!-- Batch Add Modal -->
@@ -977,6 +1004,9 @@ function toggleAddrMode() {
 .mut-badge { background: none; border: none; color: #585b70; cursor: pointer; font-size: 11px; padding: 0 5px 0 0; line-height: 1; }
 .mut-badge:hover { color: #cdd6f4; }
 .mut-badge.active { color: #a6e3a1; font-weight: 700; }
+.source-badge { background: none; border: none; color: #585b70; cursor: pointer; font-size: 13px; padding: 0 5px 0 0; line-height: 1; }
+.source-badge:hover { color: #cdd6f4; }
+.source-badge.active { color: #89b4fa; font-weight: 700; }
 
 .context-menu {
   position: fixed;

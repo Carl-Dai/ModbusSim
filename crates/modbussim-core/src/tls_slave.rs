@@ -205,13 +205,13 @@ fn handle_client(
         // Process the request.
         let response_pdu = match parsed {
             Ok(req) => process_parsed_request(unit_id, fc_byte, &req, &devices, &change_callback),
-            Err(_) => Some(build_exception_pdu(fc_byte, 0x01)),
+            Err(error) => Some(build_exception_pdu(fc_byte, error.exception_code())),
         };
 
         if let Some(ref resp) = response_pdu {
             // Log outbound response.
             if let Some(fc) = FunctionCode::from_u8(fc_byte) {
-                let detail = if resp.first().map_or(false, |b| b & 0x80 != 0) {
+                let detail = if resp.first().is_some_and(|b| b & 0x80 != 0) {
                     format!("ERR: exception 0x{:02X}", resp.get(1).copied().unwrap_or(0))
                 } else {
                     "OK".to_string()
@@ -293,7 +293,7 @@ fn process_request(
 ) -> Option<Vec<u8>> {
     match parse_request_pdu(pdu) {
         Ok(req) => process_parsed_request(unit_id, fc_byte, &req, devices, &None),
-        Err(_) => Some(build_exception_pdu(fc_byte, 0x01)),
+        Err(error) => Some(build_exception_pdu(fc_byte, error.exception_code())),
     }
 }
 
@@ -346,7 +346,7 @@ mod tests {
         let devs = devices.try_read().unwrap();
         let dev = devs.get(&1).unwrap();
         assert_eq!(dev.register_map.holding_registers.get(&10), Some(&0x00FF));
-        assert_eq!(dev.register_map.input_registers.get(&10), Some(&0x00FF));
+        assert_eq!(dev.register_map.input_registers.get(&10), Some(&0));
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
         let devs = devices.try_read().unwrap();
         let dev = devs.get(&1).unwrap();
         assert_eq!(dev.register_map.coils.get(&5), Some(&true));
-        assert_eq!(dev.register_map.discrete_inputs.get(&5), Some(&true));
+        assert_eq!(dev.register_map.discrete_inputs.get(&5), Some(&false));
     }
 
     #[test]
@@ -390,8 +390,8 @@ mod tests {
         let dev = devs.get(&1).unwrap();
         assert_eq!(dev.register_map.holding_registers.get(&0), Some(&0x000A));
         assert_eq!(dev.register_map.holding_registers.get(&1), Some(&0x000B));
-        assert_eq!(dev.register_map.input_registers.get(&0), Some(&0x000A));
-        assert_eq!(dev.register_map.input_registers.get(&1), Some(&0x000B));
+        assert_eq!(dev.register_map.input_registers.get(&0), Some(&0));
+        assert_eq!(dev.register_map.input_registers.get(&1), Some(&0));
     }
 
     #[test]
@@ -408,9 +408,9 @@ mod tests {
         assert_eq!(dev.register_map.coils.get(&1), Some(&false));
         assert_eq!(dev.register_map.coils.get(&2), Some(&true));
         // Mirror check
-        assert_eq!(dev.register_map.discrete_inputs.get(&0), Some(&true));
+        assert_eq!(dev.register_map.discrete_inputs.get(&0), Some(&false));
         assert_eq!(dev.register_map.discrete_inputs.get(&1), Some(&false));
-        assert_eq!(dev.register_map.discrete_inputs.get(&2), Some(&true));
+        assert_eq!(dev.register_map.discrete_inputs.get(&2), Some(&false));
     }
 
     #[test]

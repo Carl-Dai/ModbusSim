@@ -113,7 +113,6 @@ fn gen_leaf_cert(
         .unwrap();
 
     // SAN extension (required for modern TLS)
-    let context = builder.x509v3_context(Some(ca_cert), None);
     let mut san = SubjectAlternativeName::new();
     for n in names {
         if n.parse::<std::net::IpAddr>().is_ok() {
@@ -122,8 +121,10 @@ fn gen_leaf_cert(
             san.dns(n);
         }
     }
-    let san_ext = san.build(&context).unwrap();
-    drop(context);
+    let san_ext = {
+        let context = builder.x509v3_context(Some(ca_cert), None);
+        san.build(&context).unwrap()
+    };
     builder.append_extension(san_ext).unwrap();
 
     // EKU: serverAuth + clientAuth — required by macOS Security.framework

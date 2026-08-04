@@ -52,6 +52,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device.register_map.write_coil(addr, false);
 
@@ -64,6 +65,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device.register_map.discrete_inputs.insert(addr, false);
 
@@ -76,6 +78,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device.register_map.write_holding_register(addr, 0);
 
@@ -88,6 +91,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device.register_map.input_registers.insert(addr, 0);
         }
@@ -118,6 +122,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device.register_map.write_coil(addr, rng.gen::<bool>());
 
@@ -130,6 +135,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device
                 .register_map
@@ -145,6 +151,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device
                 .register_map
@@ -159,6 +166,7 @@ impl SlaveDevice {
                 name: String::new(),
                 comment: String::new(),
                 mutation: None,
+                data_source: None,
             });
             device
                 .register_map
@@ -420,39 +428,51 @@ impl SlaveConnection {
 /// The Modbus service that handles requests for a slave connection.
 /// Shared across all client connections via the `new_service` closure.
 /// Build the list of register mutations implied by a successful write
-/// request. Mirrors the side-effects in `handle_write` (which also writes
-/// to discrete_inputs / input_registers for symmetry with the simulator).
+/// request. Modbus write function codes only mutate writable data areas:
+/// coils (FC05/FC15) and holding registers (FC06/FC16).
 pub fn changes_from_tokio_request(slave_id: u8, req: &Request<'_>) -> Vec<RegisterChange> {
     match req {
         Request::WriteSingleCoil(addr, value) => {
             let v = if *value { 1 } else { 0 };
-            vec![
-                RegisterChange { slave_id, register_type: RegisterType::Coil, address: *addr, value: v },
-                RegisterChange { slave_id, register_type: RegisterType::DiscreteInput, address: *addr, value: v },
-            ]
+            vec![RegisterChange {
+                slave_id,
+                register_type: RegisterType::Coil,
+                address: *addr,
+                value: v,
+            }]
         }
         Request::WriteSingleRegister(addr, value) => {
-            vec![
-                RegisterChange { slave_id, register_type: RegisterType::HoldingRegister, address: *addr, value: *value },
-                RegisterChange { slave_id, register_type: RegisterType::InputRegister, address: *addr, value: *value },
-            ]
+            vec![RegisterChange {
+                slave_id,
+                register_type: RegisterType::HoldingRegister,
+                address: *addr,
+                value: *value,
+            }]
         }
         Request::WriteMultipleCoils(addr, values) => {
-            let mut out = Vec::with_capacity(2 * values.len());
+            let mut out = Vec::with_capacity(values.len());
             for (i, &v) in values.iter().enumerate() {
                 let a = addr.wrapping_add(i as u16);
                 let val = if v { 1 } else { 0 };
-                out.push(RegisterChange { slave_id, register_type: RegisterType::Coil, address: a, value: val });
-                out.push(RegisterChange { slave_id, register_type: RegisterType::DiscreteInput, address: a, value: val });
+                out.push(RegisterChange {
+                    slave_id,
+                    register_type: RegisterType::Coil,
+                    address: a,
+                    value: val,
+                });
             }
             out
         }
         Request::WriteMultipleRegisters(addr, values) => {
-            let mut out = Vec::with_capacity(2 * values.len());
+            let mut out = Vec::with_capacity(values.len());
             for (i, &v) in values.iter().enumerate() {
                 let a = addr.wrapping_add(i as u16);
-                out.push(RegisterChange { slave_id, register_type: RegisterType::HoldingRegister, address: a, value: v });
-                out.push(RegisterChange { slave_id, register_type: RegisterType::InputRegister, address: a, value: v });
+                out.push(RegisterChange {
+                    slave_id,
+                    register_type: RegisterType::HoldingRegister,
+                    address: a,
+                    value: v,
+                });
             }
             out
         }
@@ -558,10 +578,9 @@ impl Service for SlaveService {
                 }
             } else {
                 let devices = devices.read().await;
-                match devices.get(&slave) {
-                    Some(device) => Some(handle_read(&device.register_map, request)),
-                    None => None,
-                }
+                devices
+                    .get(&slave)
+                    .map(|device| handle_read(&device.register_map, request))
             };
 
             // Fire callback only on successful writes.
@@ -583,7 +602,7 @@ impl Service for SlaveService {
                         collector.try_add(LogEntry::new(
                             Direction::Tx,
                             fc,
-                            &format!("ERR: {:?}", exc),
+                            format!("ERR: {:?}", exc),
                         ));
                     }
                     None => {}
@@ -665,25 +684,23 @@ fn handle_write(
     request: Request<'static>,
 ) -> Result<Response, ExceptionCode> {
     match request {
-        // FC05: Write Single Coil (also mirror to discrete_inputs for simulator)
+        // FC05: Write Single Coil
         Request::WriteSingleCoil(addr, value) => {
             if !register_map.has_coil(addr) {
                 return Err(ExceptionCode::IllegalDataAddress);
             }
             register_map.write_coil(addr, value);
-            register_map.discrete_inputs.insert(addr, value);
             Ok(Response::WriteSingleCoil(addr, value))
         }
-        // FC06: Write Single Register (also mirror to input_registers for simulator)
+        // FC06: Write Single Register
         Request::WriteSingleRegister(addr, value) => {
             if !register_map.has_holding_register(addr) {
                 return Err(ExceptionCode::IllegalDataAddress);
             }
             register_map.write_holding_register(addr, value);
-            register_map.input_registers.insert(addr, value);
             Ok(Response::WriteSingleRegister(addr, value))
         }
-        // FC15: Write Multiple Coils (max 1968, also mirror to discrete_inputs)
+        // FC15: Write Multiple Coils (max 1968)
         Request::WriteMultipleCoils(addr, values) => {
             let quantity = values.len() as u16;
             validate_quantity(addr, quantity, 1968)?;
@@ -691,12 +708,9 @@ fn handle_write(
                 return Err(ExceptionCode::IllegalDataAddress);
             }
             register_map.write_coils(addr, &values);
-            for (i, &val) in values.iter().enumerate() {
-                register_map.discrete_inputs.insert(addr + i as u16, val);
-            }
             Ok(Response::WriteMultipleCoils(addr, quantity))
         }
-        // FC16: Write Multiple Registers (max 123, also mirror to input_registers)
+        // FC16: Write Multiple Registers (max 123)
         Request::WriteMultipleRegisters(addr, values) => {
             let quantity = values.len() as u16;
             validate_quantity(addr, quantity, 123)?;
@@ -704,9 +718,6 @@ fn handle_write(
                 return Err(ExceptionCode::IllegalDataAddress);
             }
             register_map.write_holding_registers(addr, &values);
-            for (i, &val) in values.iter().enumerate() {
-                register_map.input_registers.insert(addr + i as u16, val);
-            }
             Ok(Response::WriteMultipleRegisters(addr, quantity))
         }
         _ => Err(ExceptionCode::IllegalFunction),

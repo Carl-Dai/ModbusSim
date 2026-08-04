@@ -121,15 +121,15 @@ async fn handle_client(
                         // Log outbound response.
                         if let Some(fc_val) = request_pdu.first() {
                             if let Some(fc) = FunctionCode::from_u8(*fc_val) {
-                                let detail =
-                                    if response_pdu.first().map_or(false, |b| b & 0x80 != 0) {
-                                        format!(
-                                            "ERR: exception 0x{:02X}",
-                                            response_pdu.get(1).copied().unwrap_or(0)
-                                        )
-                                    } else {
-                                        "OK".to_string()
-                                    };
+                                let detail = if response_pdu.first().is_some_and(|b| b & 0x80 != 0)
+                                {
+                                    format!(
+                                        "ERR: exception 0x{:02X}",
+                                        response_pdu.get(1).copied().unwrap_or(0)
+                                    )
+                                } else {
+                                    "OK".to_string()
+                                };
                                 log_if_enabled(&log_collector, Direction::Tx, fc, &detail);
                             }
                         }
