@@ -339,14 +339,15 @@ pub async fn stop_slave_connection(
 #[tauri::command]
 pub async fn delete_slave_connection(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut connections = state.slave_connections.write().await;
-    let mut removed = connections
-        .remove(&id)
+    let connection = connections
+        .get_mut(&id)
         .ok_or_else(|| format!("connection {} not found", id))?;
-    removed
+    connection
         .connection
         .stop()
         .await
         .map_err(|e| format!("failed to stop connection: {}", e))?;
+    connections.remove(&id);
     drop(connections);
     state
         .mutation_runtime
@@ -1264,6 +1265,35 @@ fn mutation_mode_str(mode: MutationMode) -> &'static str {
     }
 }
 
+fn normalize_mutation_config(
+    register_type: RegisterType,
+    config: &mut MutationConfig,
+) -> Result<(), String> {
+    if matches!(
+        register_type,
+        RegisterType::Coil | RegisterType::DiscreteInput
+    ) {
+        // Bit areas always flip; numeric mutation fields are intentionally ignored.
+        config.mode = MutationMode::Flip;
+    } else {
+        if !config.min.is_finite() || !config.max.is_finite() || !config.step.is_finite() {
+            return Err("mutation min, max and step must be finite".to_string());
+        }
+        if config.min > config.max {
+            return Err("mutation min must not exceed max".to_string());
+        }
+        if matches!(
+            config.mode,
+            MutationMode::Increment | MutationMode::Decrement
+        ) && config.step <= 0.0
+        {
+            return Err("mutation step must be greater than zero".to_string());
+        }
+    }
+    config.period_ms = config.period_ms.max(MUTATION_BASE_TICK_MS);
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SetPointMutationRequest {
@@ -1282,20 +1312,7 @@ pub async fn set_point_mutation(
 ) -> Result<(), String> {
     let register_type = parse_register_type(&request.register_type)?;
     let mut config = request.config;
-    if !config.min.is_finite() || !config.max.is_finite() || !config.step.is_finite() {
-        return Err("mutation min, max and step must be finite".to_string());
-    }
-    if config.min > config.max {
-        return Err("mutation min must not exceed max".to_string());
-    }
-    if matches!(
-        config.mode,
-        MutationMode::Increment | MutationMode::Decrement
-    ) && config.step <= 0.0
-    {
-        return Err("mutation step must be greater than zero".to_string());
-    }
-    config.period_ms = config.period_ms.max(MUTATION_BASE_TICK_MS);
+    normalize_mutation_config(register_type, &mut config)?;
     let runtime = MutationRuntimeState::new(config.mode, config.period_ms);
     let key = MutationKey::new(
         request.connection_id.clone(),
@@ -1561,7 +1578,21 @@ fn legacy_register_defs(registers: project::RegistersConfig) -> Result<Vec<Regis
                 Some(value) => parse_endian(value)?,
                 None => Endian::Big,
             };
-            for offset in 0..block.count {
+            let stride = if matches!(
+                register_type,
+                RegisterType::Coil | RegisterType::DiscreteInput
+            ) {
+                1
+            } else {
+                data_type.register_count()
+            };
+            if block.count % stride != 0 {
+                return Err(format!(
+                    "legacy register block at {} has count {} which is not divisible by data width {}",
+                    block.address, block.count, stride
+                ));
+            }
+            for offset in (0..block.count).step_by(stride as usize) {
                 let address = block
                     .address
                     .checked_add(offset)
@@ -1789,4 +1820,66 @@ pub async fn start_data_source_runner(state: State<'_, AppState>) -> Result<(), 
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use modbussim_core::project::{RegisterBlockConfig, RegistersConfig};
+    use modbussim_core::register::DataType;
+
+    #[test]
+    fn bit_mutation_ignores_numeric_fields_and_normalizes_mode() {
+        let mut config = MutationConfig {
+            enabled: true,
+            mode: MutationMode::Increment,
+            period_ms: 1,
+            step: -1.0,
+            min: 10.0,
+            max: 0.0,
+        };
+
+        normalize_mutation_config(RegisterType::Coil, &mut config).unwrap();
+        assert_eq!(config.mode, MutationMode::Flip);
+        assert_eq!(config.period_ms, MUTATION_BASE_TICK_MS);
+    }
+
+    #[test]
+    fn legacy_wide_register_blocks_advance_by_data_width() {
+        let registers = RegistersConfig {
+            holding: vec![RegisterBlockConfig {
+                address: 10,
+                count: 4,
+                data_type: Some("float32".to_string()),
+                endian: Some("big".to_string()),
+                values: Vec::new(),
+                names: HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        let defs = legacy_register_defs(registers).unwrap();
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].address, 10);
+        assert_eq!(defs[1].address, 12);
+        assert!(defs.iter().all(|def| def.data_type == DataType::Float32));
+        validate_register_definition_set(&defs).unwrap();
+    }
+
+    #[test]
+    fn legacy_wide_register_blocks_reject_partial_values() {
+        let registers = RegistersConfig {
+            input: vec![RegisterBlockConfig {
+                address: 20,
+                count: 3,
+                data_type: Some("uint32".to_string()),
+                endian: None,
+                values: Vec::new(),
+                names: HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(legacy_register_defs(registers).is_err());
+    }
 }
