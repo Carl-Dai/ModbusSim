@@ -11,6 +11,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'created'): void }>()
 
 const port = ref('5020')
+const slaveId = ref('1')
+const slaveName = ref('')
 const initMode = ref('zero')
 const transport = ref('tcp')
 const serialPort = ref('')
@@ -31,6 +33,8 @@ const tlsPkcs12Password = ref('')
 watch(() => props.show, (visible) => {
   if (!visible) return
   port.value = '5020'
+  slaveId.value = '1'
+  slaveName.value = ''
   initMode.value = 'zero'
   transport.value = 'tcp'
   serialPort.value = ''
@@ -79,6 +83,7 @@ async function pickFile(target: 'cert' | 'key' | 'ca' | 'pkcs12') {
 
 async function submit() {
   const portNum = Number(port.value)
+  const initialSlaveId = Number(slaveId.value)
   const needsPort = transport.value === 'tcp' || transport.value === 'rtu_over_tcp'
   const needsSerial = transport.value === 'rtu' || transport.value === 'ascii'
 
@@ -88,6 +93,10 @@ async function submit() {
   }
   if (needsSerial && !serialPort.value) {
     await showAlert(t('errors.serialPortRequired'))
+    return
+  }
+  if (!initialSlaveId || initialSlaveId < 1 || initialSlaveId > 247) {
+    await showAlert(t('errors.invalidSlaveId'))
     return
   }
 
@@ -113,6 +122,8 @@ async function submit() {
       request: {
         transport: transportPayload,
         init_mode: initMode.value,
+        slave_id: initialSlaveId,
+        name: slaveName.value.trim(),
         ...(useTls.value ? {
           use_tls: true,
           cert_file: tlsCertFile.value || undefined,
@@ -242,6 +253,14 @@ async function submit() {
             </select>
           </div>
         </template>
+        <div class="modal-field">
+          <label>{{ t('dialog.slaveId') }}</label>
+          <input v-model="slaveId" type="number" min="1" max="247" />
+        </div>
+        <div class="modal-field">
+          <label>{{ t('dialog.slaveName') }}</label>
+          <input v-model="slaveName" type="text" :placeholder="t('dialog.slaveNamePlaceholder')" />
+        </div>
         <div class="modal-field">
           <label>{{ t('dialog.initValue') }}</label>
           <div class="radio-group">

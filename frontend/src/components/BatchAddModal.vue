@@ -35,19 +35,37 @@ const formEndian = ref('big')
 const namePrefix = ref('')
 const isSaving = ref(false)
 
-const count = computed(() => {
-  const s = startAddress.value ?? 0
-  const e = endAddress.value ?? 0
-  return e >= s ? e - s + 1 : 0
+const wordWidth = computed(() => {
+  const isWordArea = formType.value === 'holding_register' || formType.value === 'input_register'
+  return isWordArea && ['uint32', 'int32', 'float32'].includes(formDataType.value) ? 2 : 1
 })
 
-const existingCount = computed(() => {
+const candidateAddresses = computed(() => {
   const s = startAddress.value ?? 0
   const e = endAddress.value ?? 0
-  const regType = formType.value
-  return props.existingRegisters.filter(
-    (r) => r.register_type === regType && r.address >= s && r.address <= e
-  ).length
+  const result: number[] = []
+  for (let address = s; address <= e; address += wordWidth.value) {
+    if (address + wordWidth.value - 1 > e || address + wordWidth.value - 1 > 65535) break
+    result.push(address)
+  }
+  return result
+})
+
+const count = computed(() => candidateAddresses.value.length)
+
+function overlapsExisting(address: number): boolean {
+  const candidateEnd = address + wordWidth.value - 1
+  return props.existingRegisters.some((register) => {
+    if (register.register_type !== formType.value) return false
+    const isWide = (register.register_type === 'holding_register' || register.register_type === 'input_register')
+      && ['uint32', 'int32', 'float32'].includes(register.data_type)
+    const existingEnd = register.address + (isWide ? 1 : 0)
+    return address <= existingEnd && register.address <= candidateEnd
+  })
+}
+
+const existingCount = computed(() => {
+  return candidateAddresses.value.filter(overlapsExisting).length
 })
 
 const newCount = computed(() => count.value - existingCount.value)
@@ -60,18 +78,9 @@ async function handleConfirm() {
   if (!isValid.value) return
   isSaving.value = true
 
-  const s = startAddress.value ?? 0
-  const e = endAddress.value ?? 0
-  const regType = formType.value
-  const existingSet = new Set(
-    props.existingRegisters
-      .filter((r) => r.register_type === regType)
-      .map((r) => r.address)
-  )
-
   const registers = []
-  for (let addr = s; addr <= e; addr++) {
-    if (existingSet.has(addr)) continue
+  for (const addr of candidateAddresses.value) {
+    if (overlapsExisting(addr)) continue
     registers.push({
       address: addr,
       register_type: formType.value,

@@ -15,7 +15,6 @@ use modbussim_core::master::{
     scan_registers_with_ctx, scan_slave_ids_with_ctx, MasterConfig, MasterConnection, MasterError,
     MasterState, PollEvent, ReadFunction, ReadResult, ScanGroup,
 };
-use modbussim_core::register::RegisterType;
 use modbussim_core::slave::{SlaveConnection, SlaveDevice};
 use modbussim_core::transport::Transport;
 use tokio::sync::{mpsc, oneshot};
@@ -746,7 +745,8 @@ async fn e2e_random_mutation_propagation() {
                 _ = ticker.tick() => {
                     let mut g = devices.write().await;
                     if let Some(d) = g.get_mut(&1) {
-                        d.apply_random_mutation_thread(&[RegisterType::HoldingRegister]);
+                        // 直接递增 HR0 制造值变化(替代已移除的设备级随机变位),验证变化经 Modbus 传播
+                        d.register_map.write_holding_register(0, count as u16);
                         count += 1;
                     }
                 }

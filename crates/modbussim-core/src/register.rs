@@ -70,6 +70,37 @@ pub struct RegisterDef {
     pub name: String,
     #[serde(default)]
     pub comment: String,
+    /// Per-point random mutation config; `None` = not configured. Persisted.
+    #[serde(default)]
+    pub mutation: Option<crate::mutation::MutationConfig>,
+}
+
+/// Inclusive address range occupied by a point definition. Bit areas always
+/// occupy one address; 32-bit register values occupy two consecutive words.
+/// Returns `None` when the range would overflow address 65535.
+pub fn occupied_address_range(def: &RegisterDef) -> Option<(u16, u16)> {
+    let count = match def.register_type {
+        RegisterType::Coil | RegisterType::DiscreteInput => 1,
+        RegisterType::HoldingRegister | RegisterType::InputRegister => {
+            def.data_type.register_count()
+        }
+    };
+    let end = def.address.checked_add(count.saturating_sub(1))?;
+    Some((def.address, end))
+}
+
+/// Whether two point definitions ambiguously claim at least one address in
+/// the same Modbus data area. Overflowing definitions are treated as invalid.
+pub fn register_definitions_overlap(left: &RegisterDef, right: &RegisterDef) -> bool {
+    if left.register_type != right.register_type {
+        return false;
+    }
+    let (Some((left_start, left_end)), Some((right_start, right_end))) =
+        (occupied_address_range(left), occupied_address_range(right))
+    else {
+        return true;
+    };
+    left_start <= right_end && right_start <= left_end
 }
 
 #[derive(Debug, Error)]
@@ -360,6 +391,33 @@ mod tests {
         assert_eq!(DataType::UInt16.register_count(), 1);
         assert_eq!(DataType::Float32.register_count(), 2);
         assert_eq!(DataType::UInt32.register_count(), 2);
+    }
+
+    #[test]
+    fn multi_word_definition_detects_overlap_and_overflow() {
+        let make = |address, data_type| RegisterDef {
+            address,
+            register_type: RegisterType::HoldingRegister,
+            data_type,
+            endian: Endian::Big,
+            name: String::new(),
+            comment: String::new(),
+            mutation: None,
+        };
+        let wide = make(100, DataType::Float32);
+        assert_eq!(occupied_address_range(&wide), Some((100, 101)));
+        assert!(register_definitions_overlap(
+            &wide,
+            &make(101, DataType::UInt16)
+        ));
+        assert!(!register_definitions_overlap(
+            &wide,
+            &make(102, DataType::UInt16)
+        ));
+        assert_eq!(
+            occupied_address_range(&make(u16::MAX, DataType::UInt32)),
+            None
+        );
     }
 
     // --- Encode/Decode round-trip tests ---

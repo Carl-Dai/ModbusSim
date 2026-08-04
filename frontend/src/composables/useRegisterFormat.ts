@@ -11,6 +11,17 @@ export type ValueFormat =
   | 'float32_badc'
   | 'float32_dcba'
 
+export type MutationMode = 'flip' | 'increment' | 'decrement' | 'random'
+
+export interface MutationConfig {
+  enabled: boolean
+  mode: MutationMode
+  period_ms: number
+  step: number
+  min: number
+  max: number
+}
+
 export interface RegisterDef {
   address: number
   register_type: string
@@ -18,6 +29,14 @@ export interface RegisterDef {
   endian: string
   name: string
   comment: string
+  mutation?: MutationConfig | null
+}
+
+/** Info returned by `list_point_mutations` for active (enabled) points. */
+export interface PointMutationInfo {
+  register_type: string
+  address: number
+  mode: MutationMode
 }
 
 export const ENDIAN_TO_BYTEORDER: Record<string, ByteOrder> = {

@@ -1,76 +1,58 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useI18n } from 'shared-frontend'
 
 const { t } = useI18n()
 
 interface Props { connectionId: string | null; slaveId: number | null }
-const props = defineProps<Props>()
+defineProps<Props>()
 const emit = defineEmits<{ (e: 'mutated'): void }>()
 
+// Master switch for backend point-level mutation. The timer only refreshes
+// displayed values; mutation scheduling itself is entirely backend-driven.
 const active = ref(false)
-const intervalMs = ref(1000)
-const types = ref<Record<string, boolean>>({
-  coil: true,
-  discrete_input: false,
-  holding_register: true,
-  input_register: false,
-})
-let timer: number | null = null
+let refreshTimer: number | null = null
 
-function toggle() {
-  if (active.value) stop()
-  else start()
+async function toggle() {
+  if (active.value) await stop()
+  else await start()
 }
 
-function start() {
-  if (!props.connectionId || props.slaveId === null) return
-  active.value = true
-  schedule()
-}
-
-function stop() {
-  active.value = false
-  if (timer !== null) {
-    clearTimeout(timer)
-    timer = null
+async function start() {
+  try {
+    await invoke('set_mutation_running', { running: true })
+    active.value = true
+    emit('mutated')
+    scheduleRefresh()
+  } catch (e) {
+    console.error('start mutation failed:', e)
   }
 }
 
-function schedule() {
-  if (!active.value) return
-  timer = window.setTimeout(async () => {
-    if (!active.value || !props.connectionId || props.slaveId === null) {
-      stop()
-      return
-    }
-    const enabledTypes = Object.entries(types.value).filter(([, v]) => v).map(([k]) => k)
-    if (enabledTypes.length > 0) {
-      try {
-        await invoke<number>('random_mutate_registers', {
-          request: {
-            connection_id: props.connectionId,
-            slave_id: props.slaveId,
-            register_types: enabledTypes,
-          }
-        })
-        emit('mutated')
-      } catch (e) {
-        console.error('mutation failed:', e)
-      }
-    }
-    schedule()
-  }, intervalMs.value)
+async function stop() {
+  try {
+    await invoke('set_mutation_running', { running: false })
+  } catch (e) {
+    console.error('stop mutation failed:', e)
+  }
+  active.value = false
+  clearRefresh()
 }
 
-watch(() => [props.connectionId, props.slaveId], () => {
-  if (active.value) stop()
-})
+function scheduleRefresh() {
+  clearRefresh()
+  refreshTimer = window.setInterval(() => emit('mutated'), 2000)
+}
 
-onUnmounted(() => {
-  if (timer !== null) clearTimeout(timer)
-})
+function clearRefresh() {
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+onUnmounted(clearRefresh)
 </script>
 
 <template>
@@ -78,29 +60,11 @@ onUnmounted(() => {
     <button
       :class="['toolbar-btn', { 'btn-mutation-active': active }]"
       @click="toggle"
-      :disabled="!connectionId || slaveId === null"
+      :disabled="!connectionId"
       :title="t('toolbar.randomMutation')"
     >
       <span class="toolbar-label">{{ active ? t('toolbar.stopMutation') : t('toolbar.randomMutation') }}</span>
     </button>
-    <input
-      type="range"
-      class="rate-slider"
-      min="100"
-      max="5000"
-      step="100"
-      v-model.number="intervalMs"
-      :title="t('toolbar.mutationInterval')"
-    />
-    <span class="rate-label">{{ intervalMs }}ms</span>
-    <label
-      v-for="key in (['coil','discrete_input','holding_register','input_register'] as const)"
-      :key="key"
-      class="mutation-type-label"
-    >
-      <input type="checkbox" v-model="types[key]" />
-      {{ ({ coil: t('table.coil'), discrete_input: t('table.discreteInput'), holding_register: t('table.holdingRegister'), input_register: t('table.inputRegister') })[key] }}
-    </label>
   </div>
 </template>
 
@@ -111,8 +75,4 @@ onUnmounted(() => {
 .toolbar-btn:disabled { opacity: 0.4; cursor: default; }
 .toolbar-btn.btn-mutation-active { background: #a6e3a1; color: #1e1e2e; font-weight: 600; }
 .toolbar-btn.btn-mutation-active:hover { background: #94e2d5; }
-.rate-slider { width: 80px; height: 4px; accent-color: #89b4fa; cursor: pointer; }
-.rate-label { font-size: 10px; color: #6c7086; min-width: 42px; font-family: 'SF Mono', 'Fira Code', monospace; }
-.mutation-type-label { display: flex; align-items: center; gap: 3px; font-size: 11px; color: #a6adc8; cursor: pointer; white-space: nowrap; }
-.mutation-type-label input[type="checkbox"] { accent-color: #89b4fa; }
 </style>

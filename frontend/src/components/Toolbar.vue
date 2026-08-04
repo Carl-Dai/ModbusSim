@@ -18,6 +18,7 @@ const refreshRegisters = inject<() => void>('refreshRegisters')!
 const currentProjectPath = ref<string | null>(null)
 const showNewConn = ref(false)
 const showNewSlave = ref(false)
+const mutationControlKey = ref(0)
 
 type UpdateMeta = { version: string; notes: string; pub_date?: string | null }
 const checkUpdate = inject<(force?: boolean) => Promise<UpdateMeta | null>>('checkUpdate')!
@@ -44,6 +45,10 @@ async function openProject() {
     if (!path) return
     await invoke('load_project_file', { path })
     currentProjectPath.value = path as string
+    selectedConnectionId.value = null
+    selectedSlaveId.value = null
+    selectedConnectionState.value = 'Stopped'
+    mutationControlKey.value++
     refreshTree()
   } catch (e) { await showAlert(String(e)) }
 }
@@ -159,6 +164,7 @@ async function openTools() {
     </div>
     <div class="toolbar-divider"></div>
     <MutationControl
+      :key="mutationControlKey"
       :connection-id="selectedConnectionId"
       :slave-id="selectedSlaveId"
       @mutated="refreshRegisters"
