@@ -4,11 +4,60 @@
 
 use modbussim_core::data_source::DataSourceState;
 use modbussim_core::log_collector::LogCollector;
+use modbussim_core::mutation::{MutationDirection, MutationMode};
+use modbussim_core::register::RegisterType;
 use modbussim_core::slave::SlaveConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::{Duration, Instant};
+
+pub const MUTATION_BASE_TICK_MS: u64 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MutationKey {
+    pub connection_id: String,
+    pub slave_id: u8,
+    pub register_type: RegisterType,
+    pub address: u16,
+}
+
+impl MutationKey {
+    pub fn new(
+        connection_id: impl Into<String>,
+        slave_id: u8,
+        register_type: RegisterType,
+        address: u16,
+    ) -> Self {
+        Self {
+            connection_id: connection_id.into(),
+            slave_id,
+            register_type,
+            address,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationRuntimeState {
+    pub direction: MutationDirection,
+    pub next_due: Instant,
+}
+
+impl MutationRuntimeState {
+    pub fn new(mode: MutationMode, period_ms: u64) -> Self {
+        Self {
+            direction: MutationDirection::initial_for(mode),
+            next_due: Instant::now() + mutation_period(period_ms),
+        }
+    }
+}
+
+pub fn mutation_period(period_ms: u64) -> Duration {
+    Duration::from_millis(period_ms.max(MUTATION_BASE_TICK_MS))
+}
 
 /// Runtime state for a slave connection.
 pub struct SlaveConnectionState {
@@ -21,6 +70,10 @@ pub struct AppState {
     pub slave_connections: Arc<RwLock<HashMap<String, SlaveConnectionState>>>,
     pub next_slave_id: RwLock<u32>,
     pub data_sources: Arc<RwLock<HashMap<String, DataSourceState>>>,
+    /// Master switch for the point-mutation tick task.
+    pub mutation_running: Arc<AtomicBool>,
+    /// Non-persisted scheduling and triangle-wave state for enabled points.
+    pub mutation_runtime: Arc<RwLock<HashMap<MutationKey, MutationRuntimeState>>>,
 }
 
 impl Default for AppState {
@@ -29,6 +82,8 @@ impl Default for AppState {
             slave_connections: Arc::new(RwLock::new(HashMap::new())),
             next_slave_id: RwLock::new(1),
             data_sources: Arc::new(RwLock::new(HashMap::new())),
+            mutation_running: Arc::new(AtomicBool::new(false)),
+            mutation_runtime: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

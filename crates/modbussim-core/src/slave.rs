@@ -2,7 +2,6 @@ use crate::log_collector::LogCollector;
 use crate::log_entry::{Direction, FunctionCode, LogEntry};
 use crate::register::{RegisterDef, RegisterMap, RegisterType};
 use crate::transport::{SlaveTlsConfig, Transport};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -22,8 +21,6 @@ pub struct SlaveDevice {
     pub name: String,
     pub register_map: RegisterMap,
     pub register_defs: Vec<RegisterDef>,
-    #[serde(default)]
-    pub jitter: crate::jitter::JitterConfig,
 }
 
 impl SlaveDevice {
@@ -33,7 +30,6 @@ impl SlaveDevice {
             name: name.into(),
             register_map: RegisterMap::new(),
             register_defs: Vec::new(),
-            jitter: crate::jitter::JitterConfig::default(),
         }
     }
 
@@ -55,6 +51,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device.register_map.write_coil(addr, false);
 
@@ -66,6 +63,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device.register_map.discrete_inputs.insert(addr, false);
 
@@ -77,6 +75,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device.register_map.write_holding_register(addr, 0);
 
@@ -88,6 +87,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device.register_map.input_registers.insert(addr, 0);
         }
@@ -117,6 +117,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device.register_map.write_coil(addr, rng.gen::<bool>());
 
@@ -128,6 +129,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device
                 .register_map
@@ -142,6 +144,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device
                 .register_map
@@ -155,6 +158,7 @@ impl SlaveDevice {
                 endian: Endian::Big,
                 name: String::new(),
                 comment: String::new(),
+                mutation: None,
             });
             device
                 .register_map
@@ -164,86 +168,6 @@ impl SlaveDevice {
 
         device.register_defs = defs;
         device
-    }
-
-    /// Apply random mutation to a subset of this device's registers for the
-    /// specified register types. For each requested type, picks ~30% of the
-    /// addresses (at least 3, capped at total) and mutates them:
-    /// - Coil / DiscreteInput: flip the bit.
-    /// - HoldingRegister / InputRegister: add a delta in [-100, 100],
-    ///   clamped to u16 range.
-    ///
-    /// Returns the total number of registers mutated.
-    pub fn apply_random_mutation<R: Rng>(&mut self, types: &[RegisterType], rng: &mut R) -> u32 {
-        self.apply_random_mutation_inner(types, rng)
-    }
-
-    /// Convenience wrapper that uses thread-local RNG.
-    pub fn apply_random_mutation_thread(&mut self, types: &[RegisterType]) -> u32 {
-        let mut rng = rand::thread_rng();
-        self.apply_random_mutation_inner(types, &mut rng)
-    }
-
-    fn apply_random_mutation_inner<R: Rng>(&mut self, types: &[RegisterType], rng: &mut R) -> u32 {
-        let mut mutated = 0u32;
-        for &reg_type in types {
-            let addrs: Vec<u16> = self
-                .register_defs
-                .iter()
-                .filter(|d| d.register_type == reg_type)
-                .map(|d| d.address)
-                .collect();
-            if addrs.is_empty() {
-                continue;
-            }
-            let count = (addrs.len() * 30 / 100).max(3).min(addrs.len());
-            let mut pick = addrs.clone();
-            for i in (1..pick.len()).rev() {
-                let j = rng.gen_range(0..=i);
-                pick.swap(i, j);
-            }
-            for &addr in &pick[..count] {
-                match reg_type {
-                    RegisterType::Coil => {
-                        let cur = self.register_map.coils.get(&addr).copied().unwrap_or(false);
-                        self.register_map.write_coil(addr, !cur);
-                    }
-                    RegisterType::DiscreteInput => {
-                        let cur = self
-                            .register_map
-                            .discrete_inputs
-                            .get(&addr)
-                            .copied()
-                            .unwrap_or(false);
-                        self.register_map.discrete_inputs.insert(addr, !cur);
-                    }
-                    RegisterType::HoldingRegister => {
-                        let cur = self
-                            .register_map
-                            .holding_registers
-                            .get(&addr)
-                            .copied()
-                            .unwrap_or(0);
-                        let delta: i32 = rng.gen_range(-100..=100);
-                        let new_val = (cur as i32 + delta).clamp(0, 65535) as u16;
-                        self.register_map.write_holding_register(addr, new_val);
-                    }
-                    RegisterType::InputRegister => {
-                        let cur = self
-                            .register_map
-                            .input_registers
-                            .get(&addr)
-                            .copied()
-                            .unwrap_or(0);
-                        let delta: i32 = rng.gen_range(-100..=100);
-                        let new_val = (cur as i32 + delta).clamp(0, 65535) as u16;
-                        self.register_map.input_registers.insert(addr, new_val);
-                    }
-                }
-                mutated += 1;
-            }
-        }
-        mutated
     }
 }
 
@@ -1038,13 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn slave_device_has_default_jitter() {
-        let d = SlaveDevice::new(1, "s1");
-        assert!(!d.jitter.enabled);
-        assert_eq!(d.jitter.interval_ms, 1000);
-    }
-
-    #[test]
     fn slave_device_deserializes_legacy_json_without_jitter() {
         // Older .modbusproj files wrote SlaveDevice without a `jitter` field.
         let legacy = r#"{
@@ -1061,6 +978,5 @@ mod tests {
         let d: SlaveDevice = serde_json::from_str(legacy).expect("legacy parse");
         assert_eq!(d.slave_id, 1);
         assert_eq!(d.name, "legacy");
-        assert!(!d.jitter.enabled); // default
     }
 }

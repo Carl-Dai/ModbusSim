@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::register::RegisterDef;
+
 /// Project type: slave or master.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +59,12 @@ pub struct RegisterBlockConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
     pub slave_id: u8,
+    #[serde(default)]
+    pub name: String,
+    /// Current point-oriented representation. Optional for compatibility with
+    /// early v1 project files that only contained register blocks.
+    #[serde(default)]
+    pub register_defs: Vec<RegisterDef>,
     #[serde(default)]
     pub registers: RegistersConfig,
 }
@@ -160,6 +168,8 @@ pub fn migrate_project(data: &str) -> Result<ProjectFile, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mutation::{MutationConfig, MutationMode};
+    use crate::register::{DataType, Endian, RegisterType};
     use tempfile::TempDir;
 
     #[test]
@@ -193,6 +203,8 @@ mod tests {
             },
             devices: vec![DeviceConfig {
                 slave_id: 1,
+                name: "Slave 1".into(),
+                register_defs: vec![],
                 registers: RegistersConfig {
                     holding: vec![RegisterBlockConfig {
                         address: 0,
@@ -284,6 +296,71 @@ mod tests {
         assert_eq!(sg.start_address, 0);
         assert_eq!(sg.count, 10);
         assert_eq!(sg.interval_ms, 1000);
+    }
+
+    #[test]
+    fn point_mutation_config_survives_project_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mutation.modbusproj");
+        let mut project = ProjectFile::new_slave();
+        project.connections.push(ConnectionConfig {
+            id: "slave_1".into(),
+            name: "Local".into(),
+            transport: TransportConfig::Tcp {
+                host: "0.0.0.0".into(),
+                port: 5020,
+            },
+            devices: vec![DeviceConfig {
+                slave_id: 7,
+                name: "Pump".into(),
+                register_defs: vec![RegisterDef {
+                    address: 10,
+                    register_type: RegisterType::HoldingRegister,
+                    data_type: DataType::Float32,
+                    endian: Endian::Big,
+                    name: "speed".into(),
+                    comment: String::new(),
+                    mutation: Some(MutationConfig {
+                        enabled: true,
+                        mode: MutationMode::Increment,
+                        period_ms: 750,
+                        step: 0.5,
+                        min: 0.0,
+                        max: 10.0,
+                    }),
+                }],
+                registers: RegistersConfig::default(),
+            }],
+            scan_groups: vec![],
+        });
+
+        save_project(&project, &path).unwrap();
+        let loaded = load_project(&path).unwrap();
+        let mutation = loaded.connections[0].devices[0].register_defs[0]
+            .mutation
+            .as_ref()
+            .unwrap();
+        assert_eq!(mutation.mode, MutationMode::Increment);
+        assert_eq!(mutation.period_ms, 750);
+        assert_eq!(loaded.connections[0].devices[0].name, "Pump");
+    }
+
+    #[test]
+    fn old_v1_device_without_new_fields_still_loads() {
+        let json = r#"{
+            "version": 1,
+            "type": "slave",
+            "connections": [{
+                "id": "legacy",
+                "name": "Legacy",
+                "transport": { "type": "tcp", "host": "0.0.0.0", "port": 502 },
+                "devices": [{ "slave_id": 1, "registers": {} }]
+            }]
+        }"#;
+        let loaded = migrate_project(json).unwrap();
+        let device = &loaded.connections[0].devices[0];
+        assert!(device.name.is_empty());
+        assert!(device.register_defs.is_empty());
     }
 
     #[test]

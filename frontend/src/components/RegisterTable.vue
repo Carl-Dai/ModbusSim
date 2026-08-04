@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { ref, inject, watch, computed, provide, type Ref } from 'vue'
+import { ref, inject, watch, computed, provide, onMounted, onUnmounted, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { float32ToU16Pair, useI18n, useFcLabel, formatAddress, showAlert, type ByteOrder } from 'shared-frontend'
+import { float32ToU16Pair, useI18n, useFcLabel, formatAddress, showAlert, showConfirm, type ByteOrder } from 'shared-frontend'
 import RegisterModal from './RegisterModal.vue'
+import MutationConfigModal from './MutationConfigModal.vue'
 import BatchAddModal from './BatchAddModal.vue'
 import { useRegisterValues } from '../composables/useRegisterValues'
 import {
   formatU16, formatTypedValue, formatFloatPair, encodeTypedValue,
   is32BitType, isFloatFormat as isFloatFmt,
+  type MutationMode, type PointMutationInfo,
   type RegisterDef as Register, type ValueFormat,
 } from '../composables/useRegisterFormat'
 
@@ -39,6 +41,87 @@ const addrMode = ref<'hex' | 'dec'>('hex')
 provide('addrMode', addrMode)
 const showAddModal = ref(false)
 const showBatchModal = ref(false)
+
+type ColumnKey = 'address' | 'name' | 'value' | 'comment'
+const COLUMN_STORAGE_KEY = 'modbussim.registerTable.columnWidths.v1'
+const columnMinimums: Record<ColumnKey, number> = { address: 80, name: 120, value: 100, comment: 140 }
+const columnWidths = ref<Record<ColumnKey, number>>({ address: 100, name: 180, value: 140, comment: 260 })
+const columnGridStyle = computed(() => ({
+  '--col-address': `${columnWidths.value.address}px`,
+  '--col-name': `${columnWidths.value.name}px`,
+  '--col-value': `${columnWidths.value.value}px`,
+  '--col-comment': `${columnWidths.value.comment}px`,
+  '--table-min-width': `${Object.values(columnWidths.value).reduce((sum, width) => sum + width, 0)}px`,
+}))
+let stopColumnResize: (() => void) | null = null
+
+function startColumnResize(event: PointerEvent, key: ColumnKey) {
+  event.preventDefault()
+  stopColumnResize?.()
+  const startX = event.clientX
+  const startWidth = columnWidths.value[key]
+  const onMove = (moveEvent: PointerEvent) => {
+    columnWidths.value = {
+      ...columnWidths.value,
+      [key]: Math.max(columnMinimums[key], startWidth + moveEvent.clientX - startX),
+    }
+  }
+  const onUp = () => {
+    localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(columnWidths.value))
+    stopColumnResize?.()
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp, { once: true })
+  stopColumnResize = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    stopColumnResize = null
+  }
+}
+
+// Point-mutation config modal
+const showMutationModal = ref(false)
+const mutationTarget = ref<Register | undefined>(undefined)
+const mutationModes = ref<Record<string, MutationMode>>({})
+let mutationPollTimer: number | null = null
+const MODE_SYMBOL: Record<string, string> = { flip: '⇅', increment: '↑', decrement: '↓', random: '🎲' }
+function modeSymbol(mode?: string): string {
+  return mode ? (MODE_SYMBOL[mode] ?? '∿') : '∿'
+}
+function openMutation(reg: Register) {
+  mutationTarget.value = reg
+  showMutationModal.value = true
+}
+function mutationKey(reg: Register): string {
+  return `${reg.register_type}-${reg.address}`
+}
+function pointMutationMode(reg: Register): MutationMode | undefined {
+  return mutationModes.value[mutationKey(reg)]
+    ?? (reg.mutation?.enabled ? reg.mutation.mode : undefined)
+}
+async function refreshMutationIndicators() {
+  if (!selectedConnectionId.value || selectedSlaveId.value === null) {
+    mutationModes.value = {}
+    return
+  }
+  try {
+    const rows = await invoke<PointMutationInfo[]>('list_point_mutations', {
+      request: {
+        connection_id: selectedConnectionId.value,
+        slave_id: selectedSlaveId.value,
+      },
+    })
+    mutationModes.value = Object.fromEntries(
+      rows.map(row => [`${row.register_type}-${row.address}`, row.mode])
+    )
+  } catch {
+    mutationModes.value = {}
+  }
+}
+async function onMutationSaved() {
+  await loadRegisters()
+  await refreshMutationIndicators()
+}
 
 const valueFormat = ref<ValueFormat>('auto')
 
@@ -163,11 +246,31 @@ watch([selectedConnectionId, selectedSlaveId, selectedRegisterType], async () =>
   clearSelection()
   clearChangeTimers()
   await loadRegisters()
+  await refreshMutationIndicators()
 })
 
 watch(registerRefreshKey, async () => {
   await refreshValues()
   emitSelection()
+})
+
+onMounted(() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLUMN_STORAGE_KEY) ?? '{}') as Partial<Record<ColumnKey, number>>
+    for (const key of Object.keys(columnMinimums) as ColumnKey[]) {
+      const width = saved[key]
+      if (typeof width === 'number' && Number.isFinite(width)) {
+        columnWidths.value[key] = Math.max(columnMinimums[key], width)
+      }
+    }
+  } catch { /* use defaults */ }
+  refreshMutationIndicators()
+  mutationPollTimer = window.setInterval(refreshMutationIndicators, 2000)
+})
+
+onUnmounted(() => {
+  if (mutationPollTimer !== null) clearInterval(mutationPollTimer)
+  stopColumnResize?.()
 })
 
 function clearSelection() {
@@ -341,6 +444,7 @@ async function deleteRegister() {
   const reg = contextMenu.value.reg
   contextMenu.value.show = false
   if (!reg || !selectedConnectionId.value || selectedSlaveId.value === null) return
+  if (!(await showConfirm(t('errors.confirmDeleteRegister')))) return
   try {
     await invoke('remove_register', {
       connectionId: selectedConnectionId.value,
@@ -413,20 +517,17 @@ function toggleAddrMode() {
       v-else
       ref="scrollContainerRef"
       class="table-scroll-container"
+      :style="columnGridStyle"
       tabindex="0"
       @keydown="handleTableKeydown"
     >
-      <table class="table">
-        <thead>
-          <tr>
-            <th>{{ t('table.address') }}</th>
-            <th>{{ t('dialog.simpleName') }}</th>
-            <th>{{ t('dialog.simpleValue') }}</th>
-            <th>{{ t('table.comment') }}</th>
-          </tr>
-        </thead>
-      </table>
-      <div :style="{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }">
+      <div class="table-head">
+        <div class="head-cell">{{ t('table.address') }}<span class="column-resizer" @pointerdown="startColumnResize($event, 'address')"></span></div>
+        <div class="head-cell">{{ t('dialog.simpleName') }}<span class="column-resizer" @pointerdown="startColumnResize($event, 'name')"></span></div>
+        <div class="head-cell">{{ t('dialog.simpleValue') }}<span class="column-resizer" @pointerdown="startColumnResize($event, 'value')"></span></div>
+        <div class="head-cell">{{ t('table.comment') }}<span class="column-resizer" @pointerdown="startColumnResize($event, 'comment')"></span></div>
+      </div>
+      <div class="virtual-body" :style="{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }">
         <div
           v-for="virtualRow in rowVirtualizer.getVirtualItems()"
           :key="filteredRegisters[virtualRow.index]?.address ?? virtualRow.index"
@@ -446,8 +547,16 @@ function toggleAddrMode() {
           @click="selectRow($event, filteredRegisters[virtualRow.index])"
           @contextmenu.prevent="showContextMenu($event, filteredRegisters[virtualRow.index])"
         >
-          <span class="vcol col-addr">{{ fmtAddress(filteredRegisters[virtualRow.index]) }}</span>
-          <span class="vcol col-name">{{ filteredRegisters[virtualRow.index].name || '-' }}</span>
+          <span class="vcol col-addr" :title="fmtAddress(filteredRegisters[virtualRow.index])">{{ fmtAddress(filteredRegisters[virtualRow.index]) }}</span>
+          <span class="vcol col-name" :title="filteredRegisters[virtualRow.index].name || '-'">
+            <button
+              class="mut-badge"
+              :class="{ active: !!pointMutationMode(filteredRegisters[virtualRow.index]) }"
+              @click.stop="openMutation(filteredRegisters[virtualRow.index])"
+              :title="t('mutation.configure')"
+            >{{ modeSymbol(pointMutationMode(filteredRegisters[virtualRow.index])) }}</button>
+            {{ filteredRegisters[virtualRow.index].name || '-' }}
+          </span>
           <span :class="['vcol', 'col-value', { wide: valueFormat === 'auto', 'value-highlight': changedKeys.has(`${filteredRegisters[virtualRow.index].register_type}-${filteredRegisters[virtualRow.index].address}`) }]" @dblclick.stop="startEdit(filteredRegisters[virtualRow.index])">
             <template v-if="editingCell?.address === filteredRegisters[virtualRow.index].address && editingCell?.register_type === filteredRegisters[virtualRow.index].register_type">
               <input
@@ -472,7 +581,7 @@ function toggleAddrMode() {
               <span v-else class="num-value">{{ formatU16(getValue(filteredRegisters[virtualRow.index]), valueFormat) }}</span>
             </template>
           </span>
-          <span class="vcol col-comment">{{ filteredRegisters[virtualRow.index].comment || '-' }}</span>
+          <span class="vcol col-comment" :title="filteredRegisters[virtualRow.index].comment || '-'">{{ filteredRegisters[virtualRow.index].comment || '-' }}</span>
         </div>
       </div>
     </div>
@@ -496,6 +605,16 @@ function toggleAddrMode() {
       :slave-id="selectedSlaveId ?? 0"
       @close="showAddModal = false"
       @saved="onRegisterSaved"
+    />
+
+    <!-- Point Mutation Config Modal -->
+    <MutationConfigModal
+      :show="showMutationModal"
+      :register="mutationTarget"
+      :connection-id="selectedConnectionId ?? ''"
+      :slave-id="selectedSlaveId ?? 0"
+      @close="showMutationModal = false"
+      @saved="onMutationSaved"
     />
 
     <!-- Batch Add Modal -->
@@ -637,10 +756,51 @@ function toggleAddrMode() {
 
 .table-scroll-container {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
   outline: none;
   contain: strict;
 }
+
+.table-head,
+.virtual-row {
+  display: grid;
+  grid-template-columns: var(--col-address) var(--col-name) var(--col-value) var(--col-comment);
+  min-width: var(--table-min-width);
+}
+
+.table-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #1e1e2e;
+  border-bottom: 1px solid #313244;
+}
+
+.head-cell {
+  position: relative;
+  min-width: 0;
+  padding: 6px 10px;
+  color: #6c7086;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.column-resizer:hover { background: rgba(137, 180, 250, 0.45); }
+
+.virtual-body { min-width: var(--table-min-width); }
 
 .table {
   width: 100%;
@@ -686,7 +846,6 @@ function toggleAddrMode() {
 
 .col-addr {
   font-family: 'SF Mono', 'Fira Code', monospace;
-  width: 80px;
   color: #89b4fa;
 }
 
@@ -695,20 +854,14 @@ function toggleAddrMode() {
 }
 
 .col-name {
-  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.col-value {
-  width: 100px;
-}
-
 .col-comment {
   color: #6c7086;
   font-size: 11px;
-  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -755,7 +908,6 @@ function toggleAddrMode() {
 
 /* Virtual rows */
 .virtual-row {
-  display: flex;
   align-items: center;
   cursor: pointer;
   font-size: 12px;
@@ -802,31 +954,30 @@ function toggleAddrMode() {
 }
 
 .vcol.col-addr {
-  width: 80px;
-  min-width: 80px;
+  min-width: 0;
 }
 
 .vcol.col-name {
-  width: 120px;
-  min-width: 120px;
+  min-width: 0;
 }
 
 .vcol.col-value {
-  width: 100px;
-  min-width: 100px;
+  min-width: 0;
 }
 
 .vcol.col-value.wide {
-  width: 140px;
-  min-width: 140px;
+  min-width: 0;
 }
 
 .vcol.col-comment {
-  flex: 1;
   min-width: 0;
 }
 
 /* Context Menu */
+.mut-badge { background: none; border: none; color: #585b70; cursor: pointer; font-size: 11px; padding: 0 5px 0 0; line-height: 1; }
+.mut-badge:hover { color: #cdd6f4; }
+.mut-badge.active { color: #a6e3a1; font-weight: 700; }
+
 .context-menu {
   position: fixed;
   background: #1e1e2e;

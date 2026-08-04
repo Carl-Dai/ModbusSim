@@ -3,11 +3,11 @@
 //! Provides serialization/deserialization of connections, devices, and register maps
 //! to/from JSON files, as well as application state persistence.
 
+use crate::mutation::MutationConfig;
 use crate::register::{DataType, Endian, RegisterDef, RegisterMap, RegisterType};
 use crate::slave::{SlaveConnection, SlaveDevice};
 use crate::transport::Transport;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,8 @@ pub struct RegisterDefEntry {
     pub comment: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation: Option<MutationConfig>,
 }
 
 impl RegisterDefEntry {
@@ -120,6 +122,7 @@ impl RegisterDefEntry {
             name: def.name.clone(),
             comment: def.comment.clone(),
             value,
+            mutation: def.mutation.clone(),
         }
     }
 
@@ -132,6 +135,7 @@ impl RegisterDefEntry {
             endian: self.endian,
             name: self.name.clone(),
             comment: self.comment.clone(),
+            mutation: self.mutation.clone(),
         }
     }
 }
@@ -179,28 +183,23 @@ impl DeviceConfig {
                 "slave_id must be between 1 and 247".to_string(),
             ));
         }
-        if self.name.is_empty() {
-            return Err(ConfigError::InvalidConfig(
-                "device name cannot be empty".to_string(),
-            ));
-        }
-
-        // Check for duplicate addresses within same type
-        let mut by_type: HashMap<RegisterType, Vec<u16>> = HashMap::new();
-        for reg in &self.registers {
-            by_type
-                .entry(reg.register_type)
-                .or_default()
-                .push(reg.address);
-        }
-        for (reg_type, addrs) in &by_type {
-            let mut sorted = addrs.clone();
-            sorted.sort();
-            for i in 1..sorted.len() {
-                if sorted[i] == sorted[i - 1] {
+        let definitions: Vec<RegisterDef> = self
+            .registers
+            .iter()
+            .map(RegisterDefEntry::to_register_def)
+            .collect();
+        for (index, reg) in definitions.iter().enumerate() {
+            if crate::register::occupied_address_range(reg).is_none() {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "register at {:#06x} exceeds address 65535",
+                    reg.address
+                )));
+            }
+            for other in definitions.iter().skip(index + 1) {
+                if crate::register::register_definitions_overlap(reg, other) {
                     return Err(ConfigError::InvalidConfig(format!(
-                        "duplicate address {:#06x} for register type {:?}",
-                        sorted[i], reg_type
+                        "overlapping register definitions at {:#06x} and {:#06x} for {:?}",
+                        reg.address, other.address, reg.register_type
                     )));
                 }
             }
@@ -439,7 +438,7 @@ mod tests {
             name: "".to_string(),
             registers: vec![],
         };
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -448,6 +447,26 @@ mod tests {
             slave_id: 0,
             name: "Test".to_string(),
             registers: vec![],
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_device_config_rejects_multi_word_overlap() {
+        let entry = |address, data_type| RegisterDefEntry {
+            address,
+            register_type: RegisterType::HoldingRegister,
+            data_type,
+            endian: Endian::Big,
+            name: String::new(),
+            comment: String::new(),
+            value: None,
+            mutation: None,
+        };
+        let config = DeviceConfig {
+            slave_id: 1,
+            name: String::new(),
+            registers: vec![entry(10, DataType::Float32), entry(11, DataType::UInt16)],
         };
         assert!(config.validate().is_err());
     }
@@ -492,6 +511,7 @@ mod tests {
             name: "TestReg".to_string(),
             comment: "A test register".to_string(),
             value: Some(42),
+            mutation: None,
         };
 
         let def = entry.to_register_def();
@@ -553,6 +573,7 @@ mod tests {
                 name: "HR0".to_string(),
                 comment: "".to_string(),
                 value: Some(1234),
+                mutation: None,
             }],
         };
 

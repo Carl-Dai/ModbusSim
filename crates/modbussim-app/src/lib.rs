@@ -1,12 +1,19 @@
 mod analytics;
 mod commands;
+mod mutation;
 mod state;
 pub mod update;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // tauri-plugin-aptabase 在 setup 中调用 tokio::spawn，需要一个已激活的 Tokio 运行时上下文，
+    // 否则启动即 panic（"there is no reactor running"）。进入多线程运行时供其后台轮询任务使用。
+    let rt = tokio::runtime::Runtime::new().expect("failed to create Tokio runtime");
+    let _guard = rt.enter();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -23,10 +30,12 @@ pub fn run() {
             commands::list_slave_connections,
             // Slave device commands
             commands::add_slave_device,
+            commands::update_slave_device,
             commands::remove_slave_device,
             commands::list_slave_devices,
             // Register commands
             commands::add_register,
+            commands::update_register,
             commands::remove_register,
             commands::read_register,
             commands::read_registers_bulk,
@@ -48,8 +57,11 @@ pub fn run() {
             commands::export_app_state,
             commands::import_app_state,
             commands::clear_app_state,
-            // Simulation commands
-            commands::random_mutate_registers,
+            // Point-mutation commands
+            commands::set_point_mutation,
+            commands::clear_point_mutation,
+            commands::list_point_mutations,
+            commands::set_mutation_running,
             // Project file commands
             commands::save_project_file,
             commands::load_project_file,
@@ -78,6 +90,14 @@ pub fn run() {
                 )?;
             }
             analytics::track_started(app.handle());
+
+            // Start the single point-mutation tick task.
+            let state = app.state::<AppState>();
+            mutation::spawn_mutation_tick(
+                state.slave_connections.clone(),
+                state.mutation_running.clone(),
+                state.mutation_runtime.clone(),
+            );
             Ok(())
         })
         .build(tauri::generate_context!())

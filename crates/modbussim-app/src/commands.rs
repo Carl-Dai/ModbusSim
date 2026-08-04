@@ -3,19 +3,27 @@
 //! These commands are invoked from the frontend via the Tauri IPC bridge.
 
 use crate::state::{
-    AppState, RegisterValueInfo, SlaveConnectionInfo, SlaveConnectionState, SlaveDeviceInfo,
+    AppState, MutationKey, MutationRuntimeState, RegisterValueInfo, SlaveConnectionInfo,
+    SlaveConnectionState, SlaveDeviceInfo, MUTATION_BASE_TICK_MS,
 };
 use modbussim_core::data_source::{DataSource, DataSourceConfig, DataSourceState};
 use modbussim_core::log_collector::LogCollector;
 use modbussim_core::log_entry::LogEntry;
 use modbussim_core::log_helpers;
-use modbussim_core::parse::{parse_data_type, parse_endian, parse_register_type, register_type_to_str};
+use modbussim_core::mutation::{MutationConfig, MutationMode};
+use modbussim_core::parse::{
+    parse_data_type, parse_endian, parse_register_type, register_type_to_str,
+};
 use modbussim_core::project::{self, ProjectFile};
-use modbussim_core::register::{Endian, RegisterDef, RegisterType};
+use modbussim_core::register::{
+    occupied_address_range, register_definitions_overlap, Endian, RegisterDef, RegisterType,
+};
 use modbussim_core::slave::{SlaveConnection, SlaveDevice};
 use modbussim_core::tools;
 use modbussim_core::transport::{self, Parity, SerialConfig, SlaveTlsConfig, Transport};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -145,6 +153,10 @@ fn to_transport(req: &TransportRequest) -> Transport {
 pub struct CreateSlaveRequest {
     pub transport: TransportRequest,
     pub init_mode: Option<String>,
+    #[serde(default = "default_modbus_slave_id")]
+    pub slave_id: u8,
+    #[serde(default)]
+    pub name: String,
     pub use_tls: Option<bool>,
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
@@ -154,11 +166,18 @@ pub struct CreateSlaveRequest {
     pub pkcs12_password: Option<String>,
 }
 
+fn default_modbus_slave_id() -> u8 {
+    1
+}
+
 #[tauri::command]
 pub async fn create_slave_connection(
     state: State<'_, AppState>,
     request: CreateSlaveRequest,
 ) -> Result<SlaveConnectionInfo, String> {
+    if !(1..=247).contains(&request.slave_id) {
+        return Err("slave_id must be between 1 and 247".to_string());
+    }
     let id = {
         let mut counter = state.next_slave_id.write().await;
         let id = format!("slave_{}", *counter);
@@ -193,10 +212,10 @@ pub async fn create_slave_connection(
         connection
     };
 
-    // Auto-create default slave device (slave_id=1) with pre-filled registers
+    // Auto-create the initial slave device with user-supplied identity.
     let default_device = match request.init_mode.as_deref() {
-        Some("random") => SlaveDevice::with_random_registers(1, "", 20000),
-        _ => SlaveDevice::with_default_registers(1, "", 20000),
+        Some("random") => SlaveDevice::with_random_registers(request.slave_id, request.name, 20000),
+        _ => SlaveDevice::with_default_registers(request.slave_id, request.name, 20000),
     };
     connection
         .add_device(default_device)
@@ -262,7 +281,9 @@ pub async fn start_slave_connection(
             .set_append_callback(std::sync::Arc::new(move |_entry| {
                 let _ = log_handle.emit(
                     "log-appended",
-                    LogAppendedEvent { connection_id: log_conn_id.to_string() },
+                    LogAppendedEvent {
+                        connection_id: log_conn_id.to_string(),
+                    },
                 );
             }));
 
@@ -318,9 +339,27 @@ pub async fn stop_slave_connection(
 #[tauri::command]
 pub async fn delete_slave_connection(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut connections = state.slave_connections.write().await;
-    connections
-        .remove(&id)
+    let connection = connections
+        .get_mut(&id)
         .ok_or_else(|| format!("connection {} not found", id))?;
+    connection
+        .connection
+        .stop()
+        .await
+        .map_err(|e| format!("failed to stop connection: {}", e))?;
+    connections.remove(&id);
+    drop(connections);
+    state
+        .mutation_runtime
+        .write()
+        .await
+        .retain(|key, _| key.connection_id != id);
+    let prefix = format!("{}:", id);
+    state
+        .data_sources
+        .write()
+        .await
+        .retain(|key, _| !key.starts_with(&prefix));
     Ok(())
 }
 
@@ -369,6 +408,9 @@ pub async fn add_slave_device(
     state: State<'_, AppState>,
     request: AddSlaveDeviceRequest,
 ) -> Result<SlaveDeviceInfo, String> {
+    if !(1..=247).contains(&request.slave_id) {
+        return Err("slave_id must be between 1 and 247".to_string());
+    }
     let mut connections = state.slave_connections.write().await;
     let conn = connections
         .get_mut(&request.connection_id)
@@ -393,6 +435,67 @@ pub async fn add_slave_device(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UpdateSlaveDeviceRequest {
+    pub connection_id: String,
+    pub original_slave_id: u8,
+    pub slave_id: u8,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn update_slave_device(
+    state: State<'_, AppState>,
+    request: UpdateSlaveDeviceRequest,
+) -> Result<SlaveDeviceInfo, String> {
+    if !(1..=247).contains(&request.slave_id) {
+        return Err("slave_id must be between 1 and 247".to_string());
+    }
+    let connections = state.slave_connections.read().await;
+    let conn = connections
+        .get(&request.connection_id)
+        .ok_or_else(|| format!("connection {} not found", request.connection_id))?;
+    let mut devices = conn.connection.devices.write().await;
+    if request.slave_id != request.original_slave_id && devices.contains_key(&request.slave_id) {
+        return Err(format!("slave ID {} already exists", request.slave_id));
+    }
+    let mut device = devices
+        .remove(&request.original_slave_id)
+        .ok_or_else(|| format!("slave {} not found", request.original_slave_id))?;
+    device.slave_id = request.slave_id;
+    device.name = request.name.clone();
+    let register_count = device.register_defs.len();
+    devices.insert(request.slave_id, device);
+    drop(devices);
+    drop(connections);
+
+    state.mutation_runtime.write().await.retain(|key, _| {
+        key.connection_id != request.connection_id || key.slave_id != request.original_slave_id
+    });
+    if request.slave_id != request.original_slave_id {
+        let old_prefix = format!("{}:{}:", request.connection_id, request.original_slave_id);
+        let new_prefix = format!("{}:{}:", request.connection_id, request.slave_id);
+        let mut data_sources = state.data_sources.write().await;
+        let moved: Vec<_> = data_sources
+            .keys()
+            .filter(|key| key.starts_with(&old_prefix))
+            .cloned()
+            .collect();
+        for old_key in moved {
+            if let Some(value) = data_sources.remove(&old_key) {
+                data_sources.insert(old_key.replacen(&old_prefix, &new_prefix, 1), value);
+            }
+        }
+    }
+
+    Ok(SlaveDeviceInfo {
+        slave_id: request.slave_id,
+        name: request.name,
+        register_count,
+    })
+}
+
 #[tauri::command]
 pub async fn remove_slave_device(
     state: State<'_, AppState>,
@@ -408,6 +511,18 @@ pub async fn remove_slave_device(
         .remove_device(slave_id)
         .await
         .map_err(|e| format!("failed to remove device: {}", e))?;
+    drop(connections);
+    state
+        .mutation_runtime
+        .write()
+        .await
+        .retain(|key, _| key.connection_id != connection_id || key.slave_id != slave_id);
+    let prefix = format!("{}:{}:", connection_id, slave_id);
+    state
+        .data_sources
+        .write()
+        .await
+        .retain(|key, _| !key.starts_with(&prefix));
 
     Ok(())
 }
@@ -452,6 +567,46 @@ pub struct AddRegisterRequest {
     pub comment: Option<String>,
 }
 
+fn register_def_from_request(request: &AddRegisterRequest) -> Result<RegisterDef, String> {
+    Ok(RegisterDef {
+        address: request.address,
+        register_type: parse_register_type(&request.register_type)?,
+        data_type: parse_data_type(&request.data_type)?,
+        endian: match &request.endian {
+            Some(value) => parse_endian(value)?,
+            None => Endian::Big,
+        },
+        name: request.name.clone().unwrap_or_default(),
+        comment: request.comment.clone().unwrap_or_default(),
+        mutation: None,
+    })
+}
+
+fn validate_register_definition_set(definitions: &[RegisterDef]) -> Result<(), String> {
+    for (index, definition) in definitions.iter().enumerate() {
+        if occupied_address_range(definition).is_none() {
+            return Err(format!(
+                "register {}@{} exceeds address 65535",
+                register_type_to_str(definition.register_type),
+                definition.address
+            ));
+        }
+        if let Some(other) = definitions
+            .iter()
+            .skip(index + 1)
+            .find(|other| register_definitions_overlap(definition, other))
+        {
+            return Err(format!(
+                "register {}@{} overlaps point at address {}",
+                register_type_to_str(definition.register_type),
+                definition.address,
+                other.address
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct WriteRegisterRequest {
@@ -472,29 +627,107 @@ pub async fn add_register(
         .get(&request.connection_id)
         .ok_or_else(|| format!("connection {} not found", request.connection_id))?;
 
-    let register_type = parse_register_type(&request.register_type)?;
-    let data_type = parse_data_type(&request.data_type)?;
-    let endian = match &request.endian {
-        Some(s) => parse_endian(s)?,
-        None => Endian::Big,
-    };
-
-    let def = RegisterDef {
-        address: request.address,
-        register_type,
-        data_type,
-        endian,
-        name: request.name.unwrap_or_default(),
-        comment: request.comment.unwrap_or_default(),
-    };
+    let def = register_def_from_request(&request)?;
 
     let mut devices = conn.connection.devices.write().await;
     let device = devices
         .get_mut(&request.slave_id)
         .ok_or_else(|| format!("slave {} not found", request.slave_id))?;
 
+    let mut prospective = device.register_defs.clone();
+    prospective.push(def.clone());
+    validate_register_definition_set(&prospective)?;
     device.register_map.ensure_from_def(&def);
     device.register_defs.push(def);
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UpdateRegisterRequest {
+    pub connection_id: String,
+    pub slave_id: u8,
+    pub original_address: u16,
+    pub original_register_type: String,
+    pub address: u16,
+    pub register_type: String,
+    pub data_type: String,
+    pub endian: Option<String>,
+    pub name: Option<String>,
+    pub comment: Option<String>,
+}
+
+#[tauri::command]
+pub async fn update_register(
+    state: State<'_, AppState>,
+    request: UpdateRegisterRequest,
+) -> Result<(), String> {
+    let original_type = parse_register_type(&request.original_register_type)?;
+    let replacement_request = AddRegisterRequest {
+        connection_id: request.connection_id.clone(),
+        slave_id: request.slave_id,
+        address: request.address,
+        register_type: request.register_type,
+        data_type: request.data_type,
+        endian: request.endian,
+        name: request.name,
+        comment: request.comment,
+    };
+    let mut replacement = register_def_from_request(&replacement_request)?;
+    let connections = state.slave_connections.read().await;
+    let conn = connections
+        .get(&request.connection_id)
+        .ok_or_else(|| format!("connection {} not found", request.connection_id))?;
+    let mut devices = conn.connection.devices.write().await;
+    let device = devices
+        .get_mut(&request.slave_id)
+        .ok_or_else(|| format!("slave {} not found", request.slave_id))?;
+    let index = device
+        .register_defs
+        .iter()
+        .position(|definition| {
+            definition.address == request.original_address
+                && definition.register_type == original_type
+        })
+        .ok_or_else(|| "original register not found".to_string())?;
+    replacement.mutation = device.register_defs[index].mutation.clone();
+    let mut prospective = device.register_defs.clone();
+    prospective[index] = replacement.clone();
+    validate_register_definition_set(&prospective)?;
+    device.register_map.ensure_from_def(&replacement);
+    device.register_defs[index] = replacement;
+    drop(devices);
+    drop(connections);
+    state
+        .mutation_runtime
+        .write()
+        .await
+        .remove(&MutationKey::new(
+            request.connection_id.clone(),
+            request.slave_id,
+            original_type,
+            request.original_address,
+        ));
+    let old_data_source_key = format!(
+        "{}:{}:{}:{}",
+        request.connection_id,
+        request.slave_id,
+        register_type_to_str(original_type),
+        request.original_address
+    );
+    let new_data_source_key = format!(
+        "{}:{}:{}:{}",
+        request.connection_id,
+        request.slave_id,
+        replacement_request.register_type,
+        replacement_request.address
+    );
+    if old_data_source_key != new_data_source_key {
+        let mut data_sources = state.data_sources.write().await;
+        if let Some(value) = data_sources.remove(&old_data_source_key) {
+            data_sources.insert(new_data_source_key, value);
+        }
+    }
     Ok(())
 }
 
@@ -521,6 +754,23 @@ pub async fn remove_register(
     device
         .register_defs
         .retain(|d| !(d.address == address && d.register_type == reg_type));
+    drop(devices);
+    drop(connections);
+    state
+        .mutation_runtime
+        .write()
+        .await
+        .remove(&MutationKey::new(
+            connection_id.clone(),
+            slave_id,
+            reg_type,
+            address,
+        ));
+    let data_source_key = format!(
+        "{}:{}:{}:{}",
+        connection_id, slave_id, register_type, address
+    );
+    state.data_sources.write().await.remove(&data_source_key);
     Ok(())
 }
 
@@ -751,6 +1001,9 @@ pub async fn import_registers(
         .ok_or_else(|| format!("slave {} not found", request.slave_id))?;
 
     let count = request.registers.len();
+    let mut prospective = device.register_defs.clone();
+    prospective.extend(request.registers.iter().cloned());
+    validate_register_definition_set(&prospective)?;
     for reg in request.registers {
         device.register_map.ensure_from_def(&reg);
         device.register_defs.push(reg);
@@ -968,6 +1221,7 @@ pub async fn import_app_state(
         // Add devices
         for device_input in conn_input.devices {
             let mut device = SlaveDevice::new(device_input.slave_id, device_input.name.clone());
+            validate_register_definition_set(&device_input.registers)?;
 
             // Add registers
             for reg in device_input.registers {
@@ -994,63 +1248,200 @@ pub async fn import_app_state(
 #[tauri::command]
 pub async fn clear_app_state(state: State<'_, AppState>) -> Result<(), String> {
     state.slave_connections.write().await.clear();
+    state.mutation_runtime.write().await.clear();
+    state.data_sources.write().await.clear();
+    state.mutation_running.store(false, Ordering::Relaxed);
     *state.next_slave_id.write().await = 0;
+    Ok(())
+}
+
+/// Map a core `MutationMode` to its frontend string token.
+fn mutation_mode_str(mode: MutationMode) -> &'static str {
+    match mode {
+        MutationMode::Flip => "flip",
+        MutationMode::Increment => "increment",
+        MutationMode::Decrement => "decrement",
+        MutationMode::Random => "random",
+    }
+}
+
+fn normalize_mutation_config(
+    register_type: RegisterType,
+    config: &mut MutationConfig,
+) -> Result<(), String> {
+    if matches!(
+        register_type,
+        RegisterType::Coil | RegisterType::DiscreteInput
+    ) {
+        // Bit areas always flip; numeric mutation fields are intentionally ignored.
+        config.mode = MutationMode::Flip;
+    } else {
+        if !config.min.is_finite() || !config.max.is_finite() || !config.step.is_finite() {
+            return Err("mutation min, max and step must be finite".to_string());
+        }
+        if config.min > config.max {
+            return Err("mutation min must not exceed max".to_string());
+        }
+        if matches!(
+            config.mode,
+            MutationMode::Increment | MutationMode::Decrement
+        ) && config.step <= 0.0
+        {
+            return Err("mutation step must be greater than zero".to_string());
+        }
+    }
+    config.period_ms = config.period_ms.max(MUTATION_BASE_TICK_MS);
     Ok(())
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct RandomMutateRequest {
+pub struct SetPointMutationRequest {
     pub connection_id: String,
     pub slave_id: u8,
-    pub register_types: Vec<String>,
+    pub register_type: String,
+    pub address: u16,
+    pub config: MutationConfig,
 }
 
+/// Set (or update) the mutation config for a single register point.
 #[tauri::command]
-pub async fn random_mutate_registers(
+pub async fn set_point_mutation(
     state: State<'_, AppState>,
-    request: RandomMutateRequest,
-) -> Result<u32, String> {
+    request: SetPointMutationRequest,
+) -> Result<(), String> {
+    let register_type = parse_register_type(&request.register_type)?;
+    let mut config = request.config;
+    normalize_mutation_config(register_type, &mut config)?;
+    let runtime = MutationRuntimeState::new(config.mode, config.period_ms);
+    let key = MutationKey::new(
+        request.connection_id.clone(),
+        request.slave_id,
+        register_type,
+        request.address,
+    );
     let connections = state.slave_connections.read().await;
     let conn = connections
         .get(&request.connection_id)
         .ok_or_else(|| format!("connection {} not found", request.connection_id))?;
-
     let mut devices = conn.connection.devices.write().await;
     let device = devices
         .get_mut(&request.slave_id)
         .ok_or_else(|| format!("slave {} not found", request.slave_id))?;
+    let def = device
+        .register_defs
+        .iter_mut()
+        .find(|d| d.register_type == register_type && d.address == request.address)
+        .ok_or_else(|| {
+            format!(
+                "register {}@{} not found",
+                request.register_type, request.address
+            )
+        })?;
+    def.mutation = Some(config);
+    state.mutation_runtime.write().await.insert(key, runtime);
+    Ok(())
+}
 
-    let types: Vec<RegisterType> = request
-        .register_types
-        .iter()
-        .map(|s| parse_register_type(s))
-        .collect::<Result<_, _>>()?;
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ClearPointMutationRequest {
+    pub connection_id: String,
+    pub slave_id: u8,
+    pub register_type: String,
+    pub address: u16,
+}
 
-    // Diagnostic: how many addrs are present per requested type
-    let counts: Vec<(RegisterType, usize)> = types
+/// Disable mutation for a single register point.
+#[tauri::command]
+pub async fn clear_point_mutation(
+    state: State<'_, AppState>,
+    request: ClearPointMutationRequest,
+) -> Result<(), String> {
+    let register_type = parse_register_type(&request.register_type)?;
+    let connections = state.slave_connections.read().await;
+    let conn = connections
+        .get(&request.connection_id)
+        .ok_or_else(|| format!("connection {} not found", request.connection_id))?;
+    let mut devices = conn.connection.devices.write().await;
+    let device = devices
+        .get_mut(&request.slave_id)
+        .ok_or_else(|| format!("slave {} not found", request.slave_id))?;
+    let def = device
+        .register_defs
+        .iter_mut()
+        .find(|d| d.register_type == register_type && d.address == request.address)
+        .ok_or_else(|| {
+            format!(
+                "register {}@{} not found",
+                request.register_type, request.address
+            )
+        })?;
+    def.mutation = None;
+    state
+        .mutation_runtime
+        .write()
+        .await
+        .remove(&MutationKey::new(
+            request.connection_id,
+            request.slave_id,
+            register_type,
+            request.address,
+        ));
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PointMutationInfo {
+    pub register_type: String,
+    pub address: u16,
+    pub mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ListPointMutationsRequest {
+    pub connection_id: String,
+    pub slave_id: u8,
+}
+
+/// List the points that currently have mutation enabled, with their mode.
+#[tauri::command]
+pub async fn list_point_mutations(
+    state: State<'_, AppState>,
+    request: ListPointMutationsRequest,
+) -> Result<Vec<PointMutationInfo>, String> {
+    let connections = state.slave_connections.read().await;
+    let conn = connections
+        .get(&request.connection_id)
+        .ok_or_else(|| format!("connection {} not found", request.connection_id))?;
+    let devices = conn.connection.devices.read().await;
+    let device = devices
+        .get(&request.slave_id)
+        .ok_or_else(|| format!("slave {} not found", request.slave_id))?;
+    let list = device
+        .register_defs
         .iter()
-        .map(|&t| {
-            let n = device
-                .register_defs
-                .iter()
-                .filter(|d| d.register_type == t)
-                .count();
-            (t, n)
+        .filter_map(|d| {
+            d.mutation
+                .as_ref()
+                .filter(|c| c.enabled)
+                .map(|c| PointMutationInfo {
+                    register_type: register_type_to_str(d.register_type).to_string(),
+                    address: d.address,
+                    mode: mutation_mode_str(c.mode).to_string(),
+                })
         })
         .collect();
+    Ok(list)
+}
 
-    let mutated = device.apply_random_mutation_thread(&types);
-
-    log::debug!(
-        "random_mutate slave={} requested={:?} addr_counts={:?} mutated={}",
-        request.slave_id,
-        request.register_types,
-        counts,
-        mutated
-    );
-
-    Ok(mutated)
+/// Master switch: start/stop point mutation.
+#[tauri::command]
+pub async fn set_mutation_running(state: State<'_, AppState>, running: bool) -> Result<(), String> {
+    state.mutation_running.store(running, Ordering::Relaxed);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,11 +1498,20 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
                 },
             ),
         };
+        let devices = conn.devices.read().await;
         let conn_config = project::ConnectionConfig {
             id: id.clone(),
             name,
             transport: proj_transport,
-            devices: vec![], // Simplified for Phase 1 - register serialization will be added later
+            devices: devices
+                .values()
+                .map(|device| project::DeviceConfig {
+                    slave_id: device.slave_id,
+                    name: device.name.clone(),
+                    register_defs: device.register_defs.clone(),
+                    registers: project::RegistersConfig::default(),
+                })
+                .collect(),
             scan_groups: vec![],
         };
         proj.connections.push(conn_config);
@@ -1120,9 +1520,168 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
     project::save_project(&proj, std::path::Path::new(&path))
 }
 
+fn transport_from_project(config: project::TransportConfig) -> Transport {
+    match config {
+        project::TransportConfig::Tcp { host, port } => Transport::Tcp { host, port },
+        project::TransportConfig::RtuOverTcp { host, port } => Transport::RtuOverTcp { host, port },
+        project::TransportConfig::Rtu {
+            port,
+            baud_rate,
+            data_bits,
+            stop_bits,
+            parity,
+        } => Transport::Rtu(SerialConfig {
+            port,
+            baud_rate,
+            data_bits,
+            stop_bits,
+            parity: parse_parity(&parity),
+        }),
+        project::TransportConfig::Ascii {
+            port,
+            baud_rate,
+            data_bits,
+            stop_bits,
+            parity,
+        } => Transport::Ascii(SerialConfig {
+            port,
+            baud_rate,
+            data_bits,
+            stop_bits,
+            parity: parse_parity(&parity),
+        }),
+    }
+}
+
+fn legacy_register_defs(registers: project::RegistersConfig) -> Result<Vec<RegisterDef>, String> {
+    let mut defs = Vec::new();
+    let groups = [
+        (RegisterType::Coil, registers.coils),
+        (RegisterType::DiscreteInput, registers.discrete_inputs),
+        (RegisterType::HoldingRegister, registers.holding),
+        (RegisterType::InputRegister, registers.input),
+    ];
+    for (register_type, blocks) in groups {
+        for block in blocks {
+            let data_type = match block.data_type.as_deref() {
+                Some(value) => parse_data_type(value)?,
+                None if matches!(
+                    register_type,
+                    RegisterType::Coil | RegisterType::DiscreteInput
+                ) =>
+                {
+                    modbussim_core::register::DataType::Bool
+                }
+                None => modbussim_core::register::DataType::UInt16,
+            };
+            let endian = match block.endian.as_deref() {
+                Some(value) => parse_endian(value)?,
+                None => Endian::Big,
+            };
+            let stride = if matches!(
+                register_type,
+                RegisterType::Coil | RegisterType::DiscreteInput
+            ) {
+                1
+            } else {
+                data_type.register_count()
+            };
+            if block.count % stride != 0 {
+                return Err(format!(
+                    "legacy register block at {} has count {} which is not divisible by data width {}",
+                    block.address, block.count, stride
+                ));
+            }
+            for offset in (0..block.count).step_by(stride as usize) {
+                let address = block
+                    .address
+                    .checked_add(offset)
+                    .ok_or_else(|| "project register address overflow".to_string())?;
+                let name = block
+                    .names
+                    .get(&address.to_string())
+                    .or_else(|| block.names.get(&offset.to_string()))
+                    .cloned()
+                    .unwrap_or_default();
+                defs.push(RegisterDef {
+                    address,
+                    register_type,
+                    data_type,
+                    endian,
+                    name,
+                    comment: String::new(),
+                    mutation: None,
+                });
+            }
+        }
+    }
+    Ok(defs)
+}
+
 #[tauri::command]
-pub async fn load_project_file(path: String) -> Result<ProjectFile, String> {
-    project::load_project(std::path::Path::new(&path))
+pub async fn load_project_file(state: State<'_, AppState>, path: String) -> Result<usize, String> {
+    let project = project::load_project(std::path::Path::new(&path))?;
+    if project.project_type != project::ProjectType::Slave {
+        return Err("project is not a slave project".to_string());
+    }
+
+    let mut loaded = HashMap::new();
+    let mut total_devices = 0;
+    for config in project.connections {
+        if loaded.contains_key(&config.id) {
+            return Err(format!("duplicate connection id {}", config.id));
+        }
+        let log_collector = Arc::new(LogCollector::new());
+        let connection = SlaveConnection::new(transport_from_project(config.transport))
+            .with_log_collector(log_collector.clone());
+        for device_config in config.devices {
+            let mut device = SlaveDevice::new(device_config.slave_id, device_config.name);
+            let defs = if device_config.register_defs.is_empty() {
+                legacy_register_defs(device_config.registers)?
+            } else {
+                device_config.register_defs
+            };
+            validate_register_definition_set(&defs)?;
+            for def in defs {
+                device.register_map.ensure_from_def(&def);
+                device.register_defs.push(def);
+            }
+            connection
+                .add_device(device)
+                .await
+                .map_err(|e| format!("failed to load device: {}", e))?;
+            total_devices += 1;
+        }
+        loaded.insert(
+            config.id,
+            SlaveConnectionState {
+                connection,
+                log_collector,
+            },
+        );
+    }
+
+    let mut current = state.slave_connections.write().await;
+    for connection in current.values_mut() {
+        connection
+            .connection
+            .stop()
+            .await
+            .map_err(|e| format!("failed to stop current connection: {}", e))?;
+    }
+    *current = loaded;
+    let next_id = current
+        .keys()
+        .filter_map(|id| id.strip_prefix("slave_")?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    drop(current);
+    state.mutation_runtime.write().await.clear();
+    state.data_sources.write().await.clear();
+    state.mutation_running.store(false, Ordering::Relaxed);
+    *state.next_slave_id.write().await = next_id;
+    Ok(total_devices)
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,4 +1820,66 @@ pub async fn start_data_source_runner(state: State<'_, AppState>) -> Result<(), 
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use modbussim_core::project::{RegisterBlockConfig, RegistersConfig};
+    use modbussim_core::register::DataType;
+
+    #[test]
+    fn bit_mutation_ignores_numeric_fields_and_normalizes_mode() {
+        let mut config = MutationConfig {
+            enabled: true,
+            mode: MutationMode::Increment,
+            period_ms: 1,
+            step: -1.0,
+            min: 10.0,
+            max: 0.0,
+        };
+
+        normalize_mutation_config(RegisterType::Coil, &mut config).unwrap();
+        assert_eq!(config.mode, MutationMode::Flip);
+        assert_eq!(config.period_ms, MUTATION_BASE_TICK_MS);
+    }
+
+    #[test]
+    fn legacy_wide_register_blocks_advance_by_data_width() {
+        let registers = RegistersConfig {
+            holding: vec![RegisterBlockConfig {
+                address: 10,
+                count: 4,
+                data_type: Some("float32".to_string()),
+                endian: Some("big".to_string()),
+                values: Vec::new(),
+                names: HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        let defs = legacy_register_defs(registers).unwrap();
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].address, 10);
+        assert_eq!(defs[1].address, 12);
+        assert!(defs.iter().all(|def| def.data_type == DataType::Float32));
+        validate_register_definition_set(&defs).unwrap();
+    }
+
+    #[test]
+    fn legacy_wide_register_blocks_reject_partial_values() {
+        let registers = RegistersConfig {
+            input: vec![RegisterBlockConfig {
+                address: 20,
+                count: 3,
+                data_type: Some("uint32".to_string()),
+                endian: None,
+                values: Vec::new(),
+                names: HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(legacy_register_defs(registers).is_err());
+    }
 }

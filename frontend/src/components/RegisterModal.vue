@@ -38,9 +38,6 @@ const formEndian = ref('big')
 const formComment = ref('')
 const showAdvanced = ref(false)
 
-// Conflict dialog
-const showConflict = ref(false)
-
 // Reset form when modal opens or mode/register changes
 watch(
   () => [props.show, props.mode, props.register],
@@ -61,7 +58,6 @@ watch(
         formEndian.value = 'big'
         formComment.value = ''
       }
-      showConflict.value = false
     }
   },
   { immediate: true }
@@ -69,14 +65,26 @@ watch(
 
 const modalTitle = computed(() => (props.mode === 'add' ? t('registerEdit.addTitle') : t('registerEdit.editTitle')))
 
-// Check for address conflict before saving
+function occupiedEnd(address: number, registerType: string, dataType: string): number {
+  const isWordArea = registerType === 'holding_register' || registerType === 'input_register'
+  const width = isWordArea && ['uint32', 'int32', 'float32'].includes(dataType) ? 2 : 1
+  return address + width - 1
+}
+
+// Check the complete occupied range, not only the point's starting address.
 function hasConflict(): boolean {
   if (formAddress.value === undefined) return false
+  const candidateEnd = occupiedEnd(formAddress.value, formType.value, formDataType.value)
+  if (candidateEnd > 65535) return true
   return props.existingRegisters.some(
-    (r) =>
-      r.address === formAddress.value &&
-      r.register_type === formType.value &&
-      (props.mode === 'add' || r.address !== props.register?.address || r.register_type !== props.register?.register_type)
+    (r) => {
+      const isOriginal = props.mode === 'edit'
+        && r.address === props.register?.address
+        && r.register_type === props.register?.register_type
+      if (isOriginal || r.register_type !== formType.value) return false
+      const existingEnd = occupiedEnd(r.address, r.register_type, r.data_type)
+      return formAddress.value! <= existingEnd && r.address <= candidateEnd
+    }
   )
 }
 
@@ -84,44 +92,40 @@ async function handleConfirm() {
   if (formAddress.value === undefined) return
 
   if (hasConflict()) {
-    showConflict.value = true
+    await showAlert(t('registerEdit.conflictBody'))
     return
   }
 
   await save()
 }
 
-async function handleOverride() {
-  showConflict.value = false
-  await save()
-}
-
 async function save() {
   try {
-    if (props.mode === 'edit') {
-      // Remove old register first
-      if (props.register) {
-        await invoke('remove_register', {
-          connectionId: props.connectionId,
-          slaveId: props.slaveId,
-          address: props.register.address,
-          registerType: props.register.register_type,
-        })
-      }
+    const request = {
+      connection_id: props.connectionId,
+      slave_id: props.slaveId,
+      address: formAddress.value,
+      register_type: formType.value,
+      data_type: formDataType.value,
+      endian: formEndian.value,
+      name: formName.value || null,
+      comment: formComment.value || null,
     }
-    // Add new/updated register
-    await invoke('add_register', {
-      request: {
-        connection_id: props.connectionId,
-        slave_id: props.slaveId,
-        address: formAddress.value,
-        register_type: formType.value,
-        data_type: formDataType.value,
-        endian: formEndian.value,
-        name: formName.value || null,
-        comment: formComment.value || null,
-      },
-    })
+    if (props.mode === 'edit' && props.register) {
+      await invoke('update_register', {
+        request: {
+          ...request,
+          original_address: props.register.address,
+          original_register_type: props.register.register_type,
+        },
+      })
+    } else {
+      await invoke('add_register', {
+        request: {
+          ...request,
+        },
+      })
+    }
     emit('saved')
     emit('close')
   } catch (e) {
@@ -213,15 +217,6 @@ function handleBackdropClick(e: MouseEvent) {
           <button class="btn btn-primary" @click="handleConfirm">{{ t('common.confirm') }}</button>
         </div>
 
-        <!-- Conflict dialog -->
-        <div v-if="showConflict" class="conflict-dialog">
-          <div class="conflict-title">{{ t('registerEdit.conflictTitle') }}</div>
-          <div class="conflict-body">{{ t('registerEdit.conflictBody') }}</div>
-          <div class="conflict-footer">
-            <button class="btn btn-secondary" @click="showConflict = false">{{ t('common.cancel') }}</button>
-            <button class="btn btn-danger" @click="handleOverride">{{ t('common.override') }}</button>
-          </div>
-        </div>
       </div>
     </div>
   </Teleport>

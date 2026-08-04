@@ -10,11 +10,13 @@ const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'created'): void }>()
 
 const slaveId = ref('2')
+const slaveName = ref('')
 const initMode = ref('zero')
 
 watch(() => props.show, (visible) => {
   if (!visible) return
   slaveId.value = '2'
+  slaveName.value = ''
   initMode.value = 'zero'
 })
 
@@ -28,7 +30,7 @@ async function submit() {
   emit('close')
   try {
     await invoke('add_slave_device', {
-      request: { connection_id: props.connectionId, slave_id: id, name: '', init_mode: initMode.value }
+      request: { connection_id: props.connectionId, slave_id: id, name: slaveName.value.trim(), init_mode: initMode.value }
     })
     emit('created')
   } catch (e) {
@@ -45,6 +47,10 @@ async function submit() {
         <div class="modal-field">
           <label>{{ t('dialog.slaveId') }}</label>
           <input v-model="slaveId" type="number" min="1" max="247" @keyup.enter="submit" />
+        </div>
+        <div class="modal-field">
+          <label>{{ t('dialog.slaveName') }}</label>
+          <input v-model="slaveName" type="text" :placeholder="t('dialog.slaveNamePlaceholder')" @keyup.enter="submit" />
         </div>
         <div class="modal-field">
           <label>{{ t('dialog.initValue') }}</label>
@@ -68,7 +74,7 @@ async function submit() {
 .modal-title { font-size: 14px; font-weight: 600; color: #cdd6f4; margin-bottom: 16px; }
 .modal-field { margin-bottom: 14px; }
 .modal-field label { display: block; font-size: 12px; color: #a6adc8; margin-bottom: 6px; }
-.modal-field input[type="number"] { width: 100%; padding: 6px 10px; background: #313244; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 13px; outline: none; }
+.modal-field input[type="number"], .modal-field input[type="text"] { width: 100%; padding: 6px 10px; background: #313244; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 13px; outline: none; box-sizing: border-box; }
 .modal-field input:focus { border-color: #89b4fa; }
 .radio-group { display: flex; gap: 16px; }
 .radio-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #cdd6f4; cursor: pointer; }

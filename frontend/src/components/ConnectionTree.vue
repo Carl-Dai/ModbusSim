@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, inject, watch, onMounted, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { useI18n, showAlert } from 'shared-frontend'
+import { useI18n, showAlert, showConfirm } from 'shared-frontend'
+import EditSlaveDialog from './EditSlaveDialog.vue'
 
 const { t } = useI18n()
 
@@ -61,7 +62,8 @@ const selectedSlaveId = inject<Ref<number | null>>('selectedSlaveId')!
 const selectedRegisterType = inject<Ref<string | null>>('selectedRegisterType')!
 
 const treeData = ref<TreeConnection[]>([])
-const contextMenu = ref({ show: false, x: 0, y: 0, type: '' as 'connection' | 'slave', connectionId: '', slaveId: 0, connState: '' })
+const contextMenu = ref({ show: false, x: 0, y: 0, type: '' as 'connection' | 'slave', connectionId: '', slaveId: 0, slaveName: '', connState: '' })
+const editSlave = ref({ show: false, connectionId: '', slaveId: 0, name: '' })
 
 async function loadTree() {
   try {
@@ -119,6 +121,7 @@ function showContextMenuForConnection(e: MouseEvent, tc: TreeConnection) {
     type: 'connection',
     connectionId: tc.conn.id,
     slaveId: 0,
+    slaveName: '',
     connState: tc.conn.state,
   }
 }
@@ -132,8 +135,29 @@ function showContextMenuForSlave(e: MouseEvent, tc: TreeConnection, td: TreeDevi
     type: 'slave',
     connectionId: tc.conn.id,
     slaveId: td.device.slave_id,
+    slaveName: td.device.name,
     connState: '',
   }
+}
+
+function ctxEditSlave() {
+  editSlave.value = {
+    show: true,
+    connectionId: contextMenu.value.connectionId,
+    slaveId: contextMenu.value.slaveId,
+    name: contextMenu.value.slaveName,
+  }
+  closeContextMenu()
+}
+
+async function onSlaveUpdated(newSlaveId: number) {
+  if (
+    selectedConnectionId.value === editSlave.value.connectionId
+    && selectedSlaveId.value === editSlave.value.slaveId
+  ) {
+    selectedSlaveId.value = newSlaveId
+  }
+  await loadTree()
 }
 
 function closeContextMenu() {
@@ -158,6 +182,7 @@ async function ctxStopConnection() {
 
 async function ctxDeleteConnection() {
   closeContextMenu()
+  if (!(await showConfirm(t('errors.confirmDeleteConnection')))) return
   try {
     await invoke('delete_slave_connection', { id: contextMenu.value.connectionId })
     if (selectedConnectionId.value === contextMenu.value.connectionId) {
@@ -169,6 +194,7 @@ async function ctxDeleteConnection() {
 
 async function ctxDeleteSlave() {
   closeContextMenu()
+  if (!(await showConfirm(t('errors.confirmDeleteSlave')))) return
   try {
     await invoke('remove_slave_device', {
       connectionId: contextMenu.value.connectionId,
@@ -205,7 +231,9 @@ async function ctxDeleteSlave() {
             @contextmenu.prevent="showContextMenuForSlave($event, tc, td)"
           >
             <span class="node-arrow" @click.stop="toggleDevice(td)">{{ td.expanded ? '▼' : '▶' }}</span>
-            <span class="node-label">{{ td.device.name?.trim() || t('station.defaultName', { id: td.device.slave_id }) }}</span>
+            <span class="node-label" :title="td.device.name?.trim() || t('station.defaultName', { id: td.device.slave_id })">
+              {{ td.device.name?.trim() ? t('station.named', { name: td.device.name.trim(), id: td.device.slave_id }) : t('station.defaultName', { id: td.device.slave_id }) }}
+            </span>
           </div>
 
           <!-- Register Group Nodes -->
@@ -245,9 +273,19 @@ async function ctxDeleteSlave() {
         <div class="context-menu-item danger" @click="ctxDeleteConnection">{{ t('tree.deleteConnection') }}</div>
       </template>
       <template v-if="contextMenu.type === 'slave'">
+        <div class="context-menu-item" @click="ctxEditSlave">{{ t('tree.editSlave') }}</div>
         <div class="context-menu-item danger" @click="ctxDeleteSlave">{{ t('tree.deleteSlave') }}</div>
       </template>
     </div>
+
+    <EditSlaveDialog
+      :show="editSlave.show"
+      :connection-id="editSlave.connectionId"
+      :original-slave-id="editSlave.slaveId"
+      :initial-name="editSlave.name"
+      @close="editSlave.show = false"
+      @updated="onSlaveUpdated"
+    />
 
     <!-- Help Tooltip (fixed position, avoids clipping) -->
     <Teleport to="body">
