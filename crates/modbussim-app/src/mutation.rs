@@ -3,7 +3,7 @@
 //! A single long-lived task wakes every 100 ms. Each enabled point owns an
 //! independent due time and triangle-wave direction in `mutation_runtime`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -40,45 +40,46 @@ pub fn spawn_mutation_tick(
                 continue;
             }
             let now = Instant::now();
-            let mut active_keys = HashSet::new();
-            let conns = slave_connections.read().await;
-            for (connection_id, conn_state) in conns.iter() {
-                let mut devices = conn_state.connection.devices.write().await;
-                for (slave_id, device) in devices.iter_mut() {
-                    for def in device.register_defs.iter() {
-                        let Some(cfg) = &def.mutation else { continue };
-                        if !cfg.enabled {
-                            continue;
-                        }
-                        let key = MutationKey::new(
-                            connection_id,
-                            *slave_id,
-                            def.register_type,
-                            def.address,
-                        );
-                        active_keys.insert(key.clone());
-
-                        let mut runtimes = mutation_runtime.write().await;
-                        let runtime = runtimes
-                            .entry(key)
-                            .or_insert_with(|| MutationRuntimeState::new(cfg.mode, cfg.period_ms));
+            let due = {
+                let mut runtimes = mutation_runtime.write().await;
+                runtimes
+                    .iter_mut()
+                    .filter_map(|(key, runtime)| {
                         if !is_due(now, runtime.next_due) {
-                            continue;
+                            return None;
                         }
-                        runtime.direction = apply_point_mutation_thread(
-                            &mut device.register_map,
-                            def,
-                            cfg,
+                        runtime.next_due = next_due_after(now, runtime.config.period_ms);
+                        Some((
+                            key.clone(),
+                            runtime.definition.clone(),
+                            runtime.config.clone(),
                             runtime.direction,
-                        );
-                        runtime.next_due = next_due_after(now, cfg.period_ms);
-                    }
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            for (key, definition, config, direction) in due {
+                let conns = slave_connections.read().await;
+                let Some(conn_state) = conns.get(&key.connection_id) else {
+                    continue;
+                };
+                let mut devices = conn_state.connection.devices.write().await;
+                let Some(device) = devices.get_mut(&key.slave_id) else {
+                    continue;
+                };
+                let new_direction = apply_point_mutation_thread(
+                    &mut device.register_map,
+                    &definition,
+                    &config,
+                    direction,
+                );
+                drop(devices);
+                drop(conns);
+                if let Some(runtime) = mutation_runtime.write().await.get_mut(&key) {
+                    runtime.direction = new_direction;
                 }
             }
-            mutation_runtime
-                .write()
-                .await
-                .retain(|key, _| active_keys.contains(key));
         }
     });
 }

@@ -4,8 +4,8 @@
 
 use modbussim_core::data_source::DataSourceState;
 use modbussim_core::log_collector::LogCollector;
-use modbussim_core::mutation::{MutationDirection, MutationMode};
-use modbussim_core::register::RegisterType;
+use modbussim_core::mutation::{MutationConfig, MutationDirection};
+use modbussim_core::register::{RegisterDef, RegisterType};
 use modbussim_core::slave::SlaveConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,13 +44,41 @@ impl MutationKey {
 pub struct MutationRuntimeState {
     pub direction: MutationDirection,
     pub next_due: Instant,
+    pub definition: RegisterDef,
+    pub config: MutationConfig,
 }
 
 impl MutationRuntimeState {
-    pub fn new(mode: MutationMode, period_ms: u64) -> Self {
+    pub fn new(definition: &RegisterDef, config: &MutationConfig) -> Self {
         Self {
-            direction: MutationDirection::initial_for(mode),
-            next_due: Instant::now() + mutation_period(period_ms),
+            direction: MutationDirection::initial_for(config.mode),
+            next_due: Instant::now() + mutation_period(config.period_ms),
+            definition: definition.clone(),
+            config: config.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DataSourceKey {
+    pub connection_id: String,
+    pub slave_id: u8,
+    pub register_type: RegisterType,
+    pub address: u16,
+}
+
+impl DataSourceKey {
+    pub fn new(
+        connection_id: impl Into<String>,
+        slave_id: u8,
+        register_type: RegisterType,
+        address: u16,
+    ) -> Self {
+        Self {
+            connection_id: connection_id.into(),
+            slave_id,
+            register_type,
+            address,
         }
     }
 }
@@ -69,7 +97,7 @@ pub struct SlaveConnectionState {
 pub struct AppState {
     pub slave_connections: Arc<RwLock<HashMap<String, SlaveConnectionState>>>,
     pub next_slave_id: RwLock<u32>,
-    pub data_sources: Arc<RwLock<HashMap<String, DataSourceState>>>,
+    pub data_sources: Arc<RwLock<HashMap<DataSourceKey, DataSourceState>>>,
     /// Master switch for the point-mutation tick task.
     pub mutation_running: Arc<AtomicBool>,
     /// Non-persisted scheduling and triangle-wave state for enabled points.

@@ -1,8 +1,8 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DataSource {
     Fixed {
@@ -39,11 +39,51 @@ pub enum DataSource {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataSourceConfig {
     pub source: DataSource,
     #[serde(default = "default_update_interval_ms")]
     pub update_interval_ms: u64,
+}
+
+impl DataSourceConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.update_interval_ms == 0 {
+            return Err("data source update interval must be greater than zero".to_string());
+        }
+        match &self.source {
+            DataSource::Random { min, max }
+            | DataSource::Sawtooth { min, max, .. }
+            | DataSource::Triangle { min, max, .. }
+                if min > max =>
+            {
+                Err("data source min must not exceed max".to_string())
+            }
+            DataSource::Sine {
+                amplitude,
+                frequency,
+                offset,
+                phase,
+            } if !amplitude.is_finite()
+                || !frequency.is_finite()
+                || !offset.is_finite()
+                || !phase.is_finite()
+                || *frequency < 0.0 =>
+            {
+                Err("sine parameters must be finite and frequency must be non-negative".to_string())
+            }
+            DataSource::Sawtooth { period_ms: 0, .. } => {
+                Err("sawtooth period must be greater than zero".to_string())
+            }
+            DataSource::Triangle { period_ms, .. } if *period_ms < 2 => {
+                Err("triangle period must be at least 2 ms".to_string())
+            }
+            DataSource::CsvPlayback { values, .. } if values.is_empty() => {
+                Err("CSV playback requires at least one value".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 fn default_update_interval_ms() -> u64 {
@@ -55,6 +95,7 @@ pub struct DataSourceState {
     pub start_time: Instant,
     pub counter_value: i32,
     pub csv_index: usize,
+    pub next_due: Instant,
 }
 
 impl DataSourceState {
@@ -63,12 +104,22 @@ impl DataSourceState {
             DataSource::Counter { start, .. } => *start as i32,
             _ => 0,
         };
+        let next_due = Instant::now() + data_source_period(config.update_interval_ms);
         Self {
             config,
             start_time: Instant::now(),
             counter_value: start_value,
             csv_index: 0,
+            next_due,
         }
+    }
+
+    pub fn is_due(&self, now: Instant) -> bool {
+        now >= self.next_due
+    }
+
+    pub fn mark_updated(&mut self, now: Instant) {
+        self.next_due = now + data_source_period(self.config.update_interval_ms);
     }
 
     pub fn next_value(&mut self) -> u16 {
@@ -115,6 +166,9 @@ impl DataSourceState {
                 let elapsed_ms = self.start_time.elapsed().as_millis() as u64;
                 let pos = elapsed_ms % period_ms;
                 let half = period_ms / 2;
+                if half == 0 {
+                    return *min;
+                }
                 let range = *max as f64 - *min as f64;
                 if pos < half {
                     let frac = pos as f64 / half as f64;
@@ -156,6 +210,10 @@ impl DataSourceState {
     }
 }
 
+pub fn data_source_period(update_interval_ms: u64) -> Duration {
+    Duration::from_millis(update_interval_ms.max(100))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,7 +238,7 @@ mod tests {
         let mut s = make_state(DataSource::Random { min: 10, max: 20 });
         for _ in 0..100 {
             let v = s.next_value();
-            assert!(v >= 10 && v <= 20);
+            assert!((10..=20).contains(&v));
         }
     }
 
@@ -290,5 +348,40 @@ mod tests {
             period_ms: 0,
         });
         assert_eq!(s.next_value(), 5);
+    }
+
+    #[test]
+    fn validates_invalid_ranges_and_intervals() {
+        let config = DataSourceConfig {
+            source: DataSource::Random { min: 10, max: 5 },
+            update_interval_ms: 100,
+        };
+        assert!(config.validate().is_err());
+
+        let config = DataSourceConfig {
+            source: DataSource::Fixed { value: 1 },
+            update_interval_ms: 0,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn per_source_due_time_is_respected_and_clamped() {
+        let mut state = make_state(DataSource::Fixed { value: 1 });
+        let now = Instant::now();
+        state.next_due = now;
+        assert!(state.is_due(now));
+        state.mark_updated(now);
+        assert_eq!(
+            state.next_due.duration_since(now),
+            Duration::from_millis(1000)
+        );
+
+        state.config.update_interval_ms = 1;
+        state.mark_updated(now);
+        assert_eq!(
+            state.next_due.duration_since(now),
+            Duration::from_millis(100)
+        );
     }
 }

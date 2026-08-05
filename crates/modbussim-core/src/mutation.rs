@@ -239,6 +239,7 @@ mod tests {
             name: String::new(),
             comment: String::new(),
             mutation: None,
+            data_source: None,
         }
     }
 

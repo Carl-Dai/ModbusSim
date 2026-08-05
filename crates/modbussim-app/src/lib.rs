@@ -1,5 +1,6 @@
 mod analytics;
 mod commands;
+mod data_source;
 mod mutation;
 mod state;
 pub mod update;
@@ -71,7 +72,6 @@ pub fn run() {
             commands::set_data_source,
             commands::remove_data_source,
             commands::list_data_sources,
-            commands::start_data_source_runner,
             // Update commands
             update::check_for_update,
             update::install_update,
@@ -97,6 +97,11 @@ pub fn run() {
                 state.slave_connections.clone(),
                 state.mutation_running.clone(),
                 state.mutation_runtime.clone(),
+            );
+            data_source::spawn_data_source_tick(
+                app.handle().clone(),
+                state.slave_connections.clone(),
+                state.data_sources.clone(),
             );
             Ok(())
         })

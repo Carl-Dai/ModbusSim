@@ -3,6 +3,7 @@
 //! Provides serialization/deserialization of connections, devices, and register maps
 //! to/from JSON files, as well as application state persistence.
 
+use crate::data_source::DataSourceConfig;
 use crate::mutation::MutationConfig;
 use crate::register::{DataType, Endian, RegisterDef, RegisterMap, RegisterType};
 use crate::slave::{SlaveConnection, SlaveDevice};
@@ -86,6 +87,31 @@ impl RegisterValues {
             map.input_registers.insert(*addr, *val);
         }
     }
+
+    /// Apply values only to addresses already declared in the target map.
+    /// This prevents malformed project files from creating undeclared points.
+    pub fn apply_to_existing(&self, map: &mut RegisterMap) {
+        for (addr, val) in &self.coils {
+            if let Some(slot) = map.coils.get_mut(addr) {
+                *slot = *val;
+            }
+        }
+        for (addr, val) in &self.discrete_inputs {
+            if let Some(slot) = map.discrete_inputs.get_mut(addr) {
+                *slot = *val;
+            }
+        }
+        for (addr, val) in &self.holding_registers {
+            if let Some(slot) = map.holding_registers.get_mut(addr) {
+                *slot = *val;
+            }
+        }
+        for (addr, val) in &self.input_registers {
+            if let Some(slot) = map.input_registers.get_mut(addr) {
+                *slot = *val;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +135,8 @@ pub struct RegisterDefEntry {
     pub value: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutation: Option<MutationConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_source: Option<DataSourceConfig>,
 }
 
 impl RegisterDefEntry {
@@ -123,6 +151,7 @@ impl RegisterDefEntry {
             comment: def.comment.clone(),
             value,
             mutation: def.mutation.clone(),
+            data_source: def.data_source.clone(),
         }
     }
 
@@ -136,6 +165,7 @@ impl RegisterDefEntry {
             name: self.name.clone(),
             comment: self.comment.clone(),
             mutation: self.mutation.clone(),
+            data_source: self.data_source.clone(),
         }
     }
 }
@@ -188,22 +218,8 @@ impl DeviceConfig {
             .iter()
             .map(RegisterDefEntry::to_register_def)
             .collect();
-        for (index, reg) in definitions.iter().enumerate() {
-            if crate::register::occupied_address_range(reg).is_none() {
-                return Err(ConfigError::InvalidConfig(format!(
-                    "register at {:#06x} exceeds address 65535",
-                    reg.address
-                )));
-            }
-            for other in definitions.iter().skip(index + 1) {
-                if crate::register::register_definitions_overlap(reg, other) {
-                    return Err(ConfigError::InvalidConfig(format!(
-                        "overlapping register definitions at {:#06x} and {:#06x} for {:?}",
-                        reg.address, other.address, reg.register_type
-                    )));
-                }
-            }
-        }
+        crate::register::validate_register_definitions(&definitions)
+            .map_err(|error| ConfigError::InvalidConfig(error.to_string()))?;
 
         Ok(())
     }
@@ -238,7 +254,6 @@ impl DeviceConfig {
                 .filter(|r| r.register_type == RegisterType::InputRegister && r.value.is_some())
                 .map(|r| (r.address, r.value.unwrap()))
                 .collect(),
-            ..Default::default()
         };
 
         values.apply_to(&mut device.register_map);
@@ -283,7 +298,7 @@ pub struct ConnectionConfig {
 
 impl ConnectionConfig {
     /// Create a ConnectionConfig from a SlaveConnection.
-    pub fn from_slave_connection(conn: &SlaveConnection, include_values: bool) -> Self {
+    pub fn from_slave_connection(conn: &SlaveConnection, _include_values: bool) -> Self {
         // Note: we can't easily get devices from a &SlaveConnection without async
         // This is a simplified version - full implementation would need async context
         Self {
@@ -462,6 +477,7 @@ mod tests {
             comment: String::new(),
             value: None,
             mutation: None,
+            data_source: None,
         };
         let config = DeviceConfig {
             slave_id: 1,
@@ -512,6 +528,7 @@ mod tests {
             comment: "A test register".to_string(),
             value: Some(42),
             mutation: None,
+            data_source: None,
         };
 
         let def = entry.to_register_def();
@@ -574,6 +591,7 @@ mod tests {
                 comment: "".to_string(),
                 value: Some(1234),
                 mutation: None,
+                data_source: None,
             }],
         };
 

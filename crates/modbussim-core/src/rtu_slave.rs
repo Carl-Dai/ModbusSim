@@ -125,7 +125,7 @@ pub async fn run_rtu_slave(
             // Log outbound response.
             if let Some(fc_val) = request_pdu.first() {
                 if let Some(fc) = FunctionCode::from_u8(*fc_val) {
-                    let detail = if response_pdu.first().map_or(false, |b| b & 0x80 != 0) {
+                    let detail = if response_pdu.first().is_some_and(|b| b & 0x80 != 0) {
                         format!(
                             "ERR: exception 0x{:02X}",
                             response_pdu.get(1).copied().unwrap_or(0)
@@ -163,10 +163,9 @@ pub(crate) async fn process_request(
 ) -> Option<Vec<u8>> {
     let req = match parse_request_pdu(request_pdu) {
         Ok(r) => r,
-        Err(_) => {
-            // Unsupported or malformed function code -- respond with Illegal Function.
+        Err(error) => {
             let fc = request_pdu.first().copied().unwrap_or(0);
-            return Some(build_exception_pdu(fc, 0x01));
+            return Some(build_exception_pdu(fc, error.exception_code()));
         }
     };
 
@@ -205,40 +204,53 @@ pub(crate) async fn process_request(
     }
 }
 
-/// Build the side-effect list for a successful write `ModbusRequest`. Mirrors
-/// the writes performed inside `execute_write` (which writes both
-/// coil/discrete_input or holding/input pairs for symmetry).
-pub(crate) fn changes_from_modbus_request(slave_id: u8, req: &ModbusRequest) -> Vec<RegisterChange> {
+/// Build the side-effect list for a successful write `ModbusRequest`.
+pub(crate) fn changes_from_modbus_request(
+    slave_id: u8,
+    req: &ModbusRequest,
+) -> Vec<RegisterChange> {
     match req {
         ModbusRequest::WriteSingleCoil { address, value } => {
             let v = if *value { 1 } else { 0 };
-            vec![
-                RegisterChange { slave_id, register_type: RegisterType::Coil, address: *address, value: v },
-                RegisterChange { slave_id, register_type: RegisterType::DiscreteInput, address: *address, value: v },
-            ]
+            vec![RegisterChange {
+                slave_id,
+                register_type: RegisterType::Coil,
+                address: *address,
+                value: v,
+            }]
         }
         ModbusRequest::WriteSingleRegister { address, value } => {
-            vec![
-                RegisterChange { slave_id, register_type: RegisterType::HoldingRegister, address: *address, value: *value },
-                RegisterChange { slave_id, register_type: RegisterType::InputRegister, address: *address, value: *value },
-            ]
+            vec![RegisterChange {
+                slave_id,
+                register_type: RegisterType::HoldingRegister,
+                address: *address,
+                value: *value,
+            }]
         }
         ModbusRequest::WriteMultipleCoils { address, values } => {
-            let mut out = Vec::with_capacity(2 * values.len());
+            let mut out = Vec::with_capacity(values.len());
             for (i, &v) in values.iter().enumerate() {
                 let a = address.wrapping_add(i as u16);
                 let val = if v { 1 } else { 0 };
-                out.push(RegisterChange { slave_id, register_type: RegisterType::Coil, address: a, value: val });
-                out.push(RegisterChange { slave_id, register_type: RegisterType::DiscreteInput, address: a, value: val });
+                out.push(RegisterChange {
+                    slave_id,
+                    register_type: RegisterType::Coil,
+                    address: a,
+                    value: val,
+                });
             }
             out
         }
         ModbusRequest::WriteMultipleRegisters { address, values } => {
-            let mut out = Vec::with_capacity(2 * values.len());
+            let mut out = Vec::with_capacity(values.len());
             for (i, &v) in values.iter().enumerate() {
                 let a = address.wrapping_add(i as u16);
-                out.push(RegisterChange { slave_id, register_type: RegisterType::HoldingRegister, address: a, value: v });
-                out.push(RegisterChange { slave_id, register_type: RegisterType::InputRegister, address: a, value: v });
+                out.push(RegisterChange {
+                    slave_id,
+                    register_type: RegisterType::HoldingRegister,
+                    address: a,
+                    value: v,
+                });
             }
             out
         }
@@ -257,21 +269,33 @@ pub(crate) fn execute_read(
     match req {
         ModbusRequest::ReadCoils { address, quantity } => {
             validate_quantity(*address, *quantity, 2000)?;
+            if !register_map.has_all_coils(*address, *quantity) {
+                return Err(0x02);
+            }
             let bits = register_map.read_coils(*address, *quantity);
             Ok(ResponseData::ReadBits(bits))
         }
         ModbusRequest::ReadDiscreteInputs { address, quantity } => {
             validate_quantity(*address, *quantity, 2000)?;
+            if !register_map.has_all_discrete_inputs(*address, *quantity) {
+                return Err(0x02);
+            }
             let bits = register_map.read_discrete_inputs(*address, *quantity);
             Ok(ResponseData::ReadBits(bits))
         }
         ModbusRequest::ReadHoldingRegisters { address, quantity } => {
             validate_quantity(*address, *quantity, 125)?;
+            if !register_map.has_all_holding_registers(*address, *quantity) {
+                return Err(0x02);
+            }
             let regs = register_map.read_holding_registers(*address, *quantity);
             Ok(ResponseData::ReadRegisters(regs))
         }
         ModbusRequest::ReadInputRegisters { address, quantity } => {
             validate_quantity(*address, *quantity, 125)?;
+            if !register_map.has_all_input_registers(*address, *quantity) {
+                return Err(0x02);
+            }
             let regs = register_map.read_input_registers(*address, *quantity);
             Ok(ResponseData::ReadRegisters(regs))
         }
@@ -285,16 +309,20 @@ pub(crate) fn execute_write(
 ) -> Result<ResponseData, u8> {
     match req {
         ModbusRequest::WriteSingleCoil { address, value } => {
+            if !register_map.has_coil(*address) {
+                return Err(0x02);
+            }
             register_map.write_coil(*address, *value);
-            register_map.discrete_inputs.insert(*address, *value);
             Ok(ResponseData::WriteSingleCoil {
                 address: *address,
                 value: *value,
             })
         }
         ModbusRequest::WriteSingleRegister { address, value } => {
+            if !register_map.has_holding_register(*address) {
+                return Err(0x02);
+            }
             register_map.write_holding_register(*address, *value);
-            register_map.input_registers.insert(*address, *value);
             Ok(ResponseData::WriteSingleRegister {
                 address: *address,
                 value: *value,
@@ -303,12 +331,10 @@ pub(crate) fn execute_write(
         ModbusRequest::WriteMultipleCoils { address, values } => {
             let quantity = values.len() as u16;
             validate_quantity(*address, quantity, 1968)?;
-            register_map.write_coils(*address, values);
-            for (i, &val) in values.iter().enumerate() {
-                register_map
-                    .discrete_inputs
-                    .insert(*address + i as u16, val);
+            if !register_map.has_all_coils(*address, quantity) {
+                return Err(0x02);
             }
+            register_map.write_coils(*address, values);
             Ok(ResponseData::WriteMultiple {
                 address: *address,
                 quantity,
@@ -317,12 +343,10 @@ pub(crate) fn execute_write(
         ModbusRequest::WriteMultipleRegisters { address, values } => {
             let quantity = values.len() as u16;
             validate_quantity(*address, quantity, 123)?;
-            register_map.write_holding_registers(*address, values);
-            for (i, &val) in values.iter().enumerate() {
-                register_map
-                    .input_registers
-                    .insert(*address + i as u16, val);
+            if !register_map.has_all_holding_registers(*address, quantity) {
+                return Err(0x02);
             }
+            register_map.write_holding_registers(*address, values);
             Ok(ResponseData::WriteMultiple {
                 address: *address,
                 quantity,
@@ -349,6 +373,7 @@ pub(crate) fn validate_quantity(addr: u16, quantity: u16, max_quantity: u16) -> 
 // ---------------------------------------------------------------------------
 
 /// Map a `ModbusRequest` variant to its `FunctionCode`.
+#[cfg(test)]
 pub(crate) fn request_to_fc(req: &ModbusRequest) -> FunctionCode {
     match req {
         ModbusRequest::ReadCoils { .. } => FunctionCode::ReadCoils,
@@ -483,8 +508,8 @@ mod tests {
         let devs = devices.read().await;
         let dev = devs.get(&1).unwrap();
         assert_eq!(dev.register_map.holding_registers.get(&10), Some(&0x00FF));
-        // Mirror to input_registers.
-        assert_eq!(dev.register_map.input_registers.get(&10), Some(&0x00FF));
+        // Read-only input registers must not be changed by FC06.
+        assert_eq!(dev.register_map.input_registers.get(&10), Some(&0));
     }
 
     #[tokio::test]
@@ -508,6 +533,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_supported_request_returns_illegal_data_value() {
+        let devices = make_devices(1);
+        let pdu = [0x05, 0, 0, 0x12, 0x34];
+        let response = process_request(1, &pdu, &devices, &None).await.unwrap();
+        assert_eq!(response, vec![0x85, 0x03]);
+    }
+
+    #[tokio::test]
+    async fn undefined_addresses_return_illegal_data_address() {
+        let devices = make_devices(1);
+        let read = [0x03, 0, 101, 0, 1];
+        assert_eq!(
+            process_request(1, &read, &devices, &None).await.unwrap(),
+            vec![0x83, 0x02]
+        );
+
+        let write = [0x06, 0, 101, 0x12, 0x34];
+        assert_eq!(
+            process_request(1, &write, &devices, &None).await.unwrap(),
+            vec![0x86, 0x02]
+        );
+        let devices = devices.read().await;
+        assert!(!devices
+            .get(&1)
+            .unwrap()
+            .register_map
+            .has_holding_register(101));
+    }
+
+    #[tokio::test]
     async fn test_process_request_write_single_coil() {
         let devices = make_devices(1);
         // FC05 Write Single Coil: addr=5, value=ON (0xFF00)
@@ -518,7 +573,7 @@ mod tests {
         let devs = devices.read().await;
         let dev = devs.get(&1).unwrap();
         assert_eq!(dev.register_map.coils.get(&5), Some(&true));
-        assert_eq!(dev.register_map.discrete_inputs.get(&5), Some(&true));
+        assert_eq!(dev.register_map.discrete_inputs.get(&5), Some(&false));
     }
 
     #[tokio::test]
@@ -551,8 +606,8 @@ mod tests {
         let dev = devs.get(&1).unwrap();
         assert_eq!(dev.register_map.holding_registers.get(&0), Some(&0x000A));
         assert_eq!(dev.register_map.holding_registers.get(&1), Some(&0x000B));
-        assert_eq!(dev.register_map.input_registers.get(&0), Some(&0x000A));
-        assert_eq!(dev.register_map.input_registers.get(&1), Some(&0x000B));
+        assert_eq!(dev.register_map.input_registers.get(&0), Some(&0));
+        assert_eq!(dev.register_map.input_registers.get(&1), Some(&0));
     }
 
     #[test]

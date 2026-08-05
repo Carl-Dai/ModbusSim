@@ -7,7 +7,11 @@ fn ts(s: &str) -> DateTime<Utc> {
 
 #[test]
 fn should_check_when_no_prior_check() {
-    assert!(should_check(None, ts("2026-04-28T10:00:00Z"), Duration::hours(6)));
+    assert!(should_check(
+        None,
+        ts("2026-04-28T10:00:00Z"),
+        Duration::hours(6)
+    ));
 }
 
 #[test]

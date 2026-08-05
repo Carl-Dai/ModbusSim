@@ -34,6 +34,11 @@ const tlsKeyFile = ref('')
 const tlsPkcs12File = ref('')
 const tlsPkcs12Password = ref('')
 const tlsAcceptInvalidCerts = ref(false)
+const useSocks5 = ref(false)
+const socks5Host = ref('127.0.0.1')
+const socks5Port = ref(1080)
+const socks5Username = ref('')
+const socks5Password = ref('')
 
 watch(() => props.show, (visible) => {
   if (!visible) return
@@ -50,6 +55,11 @@ watch(() => props.show, (visible) => {
   tlsPkcs12File.value = ''
   tlsPkcs12Password.value = ''
   tlsAcceptInvalidCerts.value = false
+  useSocks5.value = false
+  socks5Host.value = '127.0.0.1'
+  socks5Port.value = 1080
+  socks5Username.value = ''
+  socks5Password.value = ''
 })
 
 watch(() => form.value.transport, (val) => {
@@ -80,8 +90,21 @@ async function pickFile(target: 'cert' | 'key' | 'ca' | 'pkcs12') {
 
 async function submit() {
   const needsSerial = form.value.transport === 'rtu' || form.value.transport === 'ascii'
+  const usesNetwork = form.value.transport === 'tcp' || form.value.transport === 'rtu_over_tcp'
   if (needsSerial && !serialPort.value) {
     await showAlert(t('errors.serialPortRequired'))
+    return
+  }
+  if (usesNetwork && useSocks5.value && !socks5Host.value.trim()) {
+    await showAlert(t('errors.socks5HostRequired'))
+    return
+  }
+  if (usesNetwork && useSocks5.value && (!socks5Port.value || socks5Port.value > 65535)) {
+    await showAlert(t('errors.invalidPort'))
+    return
+  }
+  if (usesNetwork && useSocks5.value && (!!socks5Username.value !== !!socks5Password.value)) {
+    await showAlert(t('errors.socks5CredentialsPair'))
     return
   }
 
@@ -117,6 +140,15 @@ async function submit() {
           pkcs12_password: tlsPkcs12Password.value || undefined,
           accept_invalid_certs: tlsAcceptInvalidCerts.value || undefined,
         } : {}),
+        ...(usesNetwork && useSocks5.value ? {
+          socks5: {
+            enabled: true,
+            host: socks5Host.value.trim(),
+            port: socks5Port.value,
+            username: socks5Username.value,
+            password: socks5Password.value,
+          },
+        } : {}),
       }
     })
     emit('close')
@@ -149,6 +181,28 @@ async function submit() {
               {{ t('dialog.port') }}
               <input v-model.number="form.port" class="form-input" type="number" min="1" max="65535" />
             </label>
+            <label class="form-label checkbox-label">
+              <input type="checkbox" v-model="useSocks5" /> {{ t('dialog.enableSocks5') }}
+            </label>
+            <template v-if="useSocks5">
+              <label class="form-label">
+                {{ t('dialog.socks5Host') }}
+                <input v-model="socks5Host" class="form-input" type="text" placeholder="127.0.0.1" />
+              </label>
+              <label class="form-label">
+                {{ t('dialog.socks5Port') }}
+                <input v-model.number="socks5Port" class="form-input" type="number" min="1" max="65535" />
+              </label>
+              <label class="form-label">
+                {{ t('dialog.socks5Username') }}
+                <input v-model="socks5Username" class="form-input" type="text" :placeholder="t('dialog.optional')" autocomplete="username" />
+              </label>
+              <label class="form-label">
+                {{ t('dialog.socks5Password') }}
+                <input v-model="socks5Password" class="form-input" type="password" :placeholder="t('dialog.optional')" autocomplete="current-password" />
+              </label>
+              <div class="form-hint">{{ t('dialog.socks5AuthWarning') }}</div>
+            </template>
           </template>
           <template v-if="form.transport === 'tcp'">
             <label class="form-label">
@@ -257,11 +311,13 @@ async function submit() {
 
 <style scoped>
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal-box { background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px; padding: 20px; min-width: 340px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.modal-box { box-sizing: border-box; background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px; padding: 20px; min-width: 340px; max-height: calc(100vh - 32px); overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
 .modal-title { font-size: 15px; font-weight: 600; color: #cdd6f4; margin-bottom: 16px; }
 .modal-body { display: flex; flex-direction: column; gap: 12px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .form-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #6c7086; }
+.checkbox-label { flex-direction: row; align-items: center; }
+.form-hint { margin-top: -6px; color: #a6adc8; font-size: 11px; line-height: 1.4; }
 .form-input { padding: 6px 10px; background: #313244; border: 1px solid #45475a; border-radius: 4px; color: #cdd6f4; font-size: 13px; }
 .form-input:focus { outline: none; border-color: #89b4fa; }
 .file-row { display: flex; gap: 4px; }

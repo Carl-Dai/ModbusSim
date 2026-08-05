@@ -3,7 +3,10 @@ use modbussim_core::master::{
     ReadResult,
 };
 use modbussim_core::slave::{SlaveConnection, SlaveDevice};
+use modbussim_core::socks5::Socks5Config;
 use modbussim_core::transport::Transport;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 /// Helper: start a slave on the given port with a device at slave_id=1.
 async fn start_slave(port: u16) -> SlaveConnection {
@@ -55,6 +58,46 @@ fn new_master(port: u16) -> MasterConnection {
     MasterConnection::new(config, transport)
 }
 
+async fn start_socks5_proxy() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut client, _) = listener.accept().await.unwrap();
+        let mut greeting = [0u8; 3];
+        client.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [0x05, 0x01, 0x00]);
+        client.write_all(&[0x05, 0x00]).await.unwrap();
+
+        let mut header = [0u8; 4];
+        client.read_exact(&mut header).await.unwrap();
+        assert_eq!(&header[..3], &[0x05, 0x01, 0x00]);
+        let host = match header[3] {
+            0x01 => {
+                let mut bytes = [0u8; 4];
+                client.read_exact(&mut bytes).await.unwrap();
+                std::net::Ipv4Addr::from(bytes).to_string()
+            }
+            0x03 => {
+                let length = client.read_u8().await.unwrap() as usize;
+                let mut bytes = vec![0u8; length];
+                client.read_exact(&mut bytes).await.unwrap();
+                String::from_utf8(bytes).unwrap()
+            }
+            other => panic!("unexpected SOCKS5 address type {other}"),
+        };
+        let port = client.read_u16().await.unwrap();
+        let mut upstream = TcpStream::connect((host.as_str(), port)).await.unwrap();
+        client
+            .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+            .await
+            .unwrap();
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .unwrap();
+    });
+    (address, task)
+}
+
 #[tokio::test]
 async fn test_master_connect_disconnect() {
     let mut slave = start_slave(16001).await;
@@ -91,6 +134,46 @@ async fn test_master_read_holding_registers() {
     }
 
     master.disconnect().await.unwrap();
+    slave.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_master_read_through_socks5_proxy() {
+    let mut slave = start_slave(16012).await;
+    let (proxy_address, proxy_task) = start_socks5_proxy().await;
+    let config = MasterConfig {
+        target_address: "localhost".to_string(),
+        port: 16012,
+        slave_id: 1,
+        timeout_ms: 3000,
+        socks5: Socks5Config {
+            enabled: true,
+            host: proxy_address.ip().to_string(),
+            port: proxy_address.port(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let transport = Transport::Tcp {
+        host: config.target_address.clone(),
+        port: config.port,
+    };
+    let mut master = MasterConnection::new(config, transport);
+
+    master.connect().await.unwrap();
+    let result = master
+        .read(ReadFunction::ReadHoldingRegisters, 0, 3)
+        .await
+        .unwrap();
+    match result {
+        ReadResult::HoldingRegisters(values) => {
+            assert_eq!(values, vec![1000, 2000, 3000]);
+        }
+        _ => panic!("unexpected result type"),
+    }
+
+    master.disconnect().await.unwrap();
+    proxy_task.await.unwrap();
     slave.stop().await.unwrap();
 }
 

@@ -103,7 +103,7 @@ pub fn rtu_interframe_delay_us(baud_rate: u32) -> u64 {
         1750
     } else {
         // 3.5 chars * 11 bits/char = 38.5 bits; time in µs = 38.5 / baud * 1_000_000
-        (38_500_000u64 + baud_rate as u64 - 1) / baud_rate as u64
+        38_500_000u64.div_ceil(baud_rate as u64)
     }
 }
 
@@ -191,6 +191,6 @@ mod tests {
     #[test]
     fn test_rtu_interframe_delay_low_baud() {
         let delay = rtu_interframe_delay_us(9600);
-        assert!(delay >= 3500 && delay <= 4500, "delay={delay}");
+        assert!((3500..=4500).contains(&delay), "delay={delay}");
     }
 }

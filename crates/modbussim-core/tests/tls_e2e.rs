@@ -113,7 +113,6 @@ fn gen_leaf_cert(
         .unwrap();
 
     // SAN extension (required for modern TLS)
-    let context = builder.x509v3_context(Some(ca_cert), None);
     let mut san = SubjectAlternativeName::new();
     for n in names {
         if n.parse::<std::net::IpAddr>().is_ok() {
@@ -122,8 +121,10 @@ fn gen_leaf_cert(
             san.dns(n);
         }
     }
-    let san_ext = san.build(&context).unwrap();
-    drop(context);
+    let san_ext = {
+        let context = builder.x509v3_context(Some(ca_cert), None);
+        san.build(&context).unwrap()
+    };
     builder.append_extension(san_ext).unwrap();
 
     // EKU: serverAuth + clientAuth — required by macOS Security.framework
@@ -221,6 +222,7 @@ async fn test_tls_read_holding_registers() {
         slave_id: 1,
         timeout_ms: 5000,
         tls: tls_config,
+        ..Default::default()
     };
     let master_transport = Transport::TcpTls {
         host: "127.0.0.1".to_string(),
@@ -306,6 +308,7 @@ async fn test_tls_accept_invalid_certs() {
         slave_id: 1,
         timeout_ms: 5000,
         tls: tls_config,
+        ..Default::default()
     };
     let master_transport = Transport::TcpTls {
         host: "127.0.0.1".to_string(),

@@ -29,6 +29,7 @@ interface RegisterValueEvent {
 export function useRegisterValues(
   selectedConnectionId: Ref<string | null>,
   selectedSlaveId: Ref<number | null>,
+  selectedRegisterType: Ref<string | null>,
 ) {
   const registers = ref<RegisterDef[]>([])
   const registerValues = ref<Record<string, number>>({})
@@ -72,7 +73,11 @@ export function useRegisterValues(
     error.value = null
     loadDirtyKeys = new Set()
     try {
-      const defs = await invoke<RegisterDef[]>('list_registers', { connectionId: connId, slaveId })
+      const defs = await invoke<RegisterDef[]>('list_registers', {
+        connectionId: connId,
+        slaveId,
+        registerType: selectedRegisterType.value,
+      })
       if (seq !== loadSeq) return
       registers.value = defs
 
@@ -157,7 +162,7 @@ export function useRegisterValues(
 
   startListening()
 
-  watch([selectedConnectionId, selectedSlaveId], clearChangeTimers)
+  watch([selectedConnectionId, selectedSlaveId, selectedRegisterType], clearChangeTimers)
 
   function getValue(rt: string, address: number): number {
     return registerValues.value[`${rt}-${address}`] ?? 0
