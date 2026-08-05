@@ -16,6 +16,7 @@ use modbussim_core::master::{
 };
 use modbussim_core::parse::{parse_read_function, read_function_to_string};
 use modbussim_core::reconnect::ReconnectPolicy;
+use modbussim_core::socks5::Socks5Config;
 use modbussim_core::tools;
 use modbussim_core::transport::{self, Parity, SerialConfig, TlsConfig, Transport};
 use serde::{Deserialize, Serialize};
@@ -213,6 +214,7 @@ pub struct CreateMasterRequest {
     pub pkcs12_file: Option<String>,
     pub pkcs12_password: Option<String>,
     pub accept_invalid_certs: Option<bool>,
+    pub socks5: Option<Socks5Config>,
 }
 
 #[tauri::command]
@@ -228,6 +230,11 @@ pub async fn create_master_connection(
     };
 
     let transport = to_transport(&request.transport);
+    let socks5 = request.socks5.unwrap_or_default();
+    socks5.validate()?;
+    if socks5.enabled && matches!(&transport, Transport::Rtu(_) | Transport::Ascii(_)) {
+        return Err("SOCKS5 is only supported by TCP-based transports".to_string());
+    }
 
     let (target_address, port) = match &transport {
         Transport::Tcp { host, port }
@@ -250,6 +257,7 @@ pub async fn create_master_connection(
             pkcs12_password: request.pkcs12_password.unwrap_or_default(),
             accept_invalid_certs: request.accept_invalid_certs.unwrap_or(false),
         },
+        socks5,
     };
 
     let log_collector = Arc::new(LogCollector::new());
@@ -1435,6 +1443,7 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
             default_slave_id: config.slave_id,
             timeout_ms: config.timeout_ms,
             reconnect_policy: conn_state.connection.reconnect_policy.clone(),
+            socks5: config.socks5.clone(),
         };
         proj.connections.push(conn_config);
     }
@@ -1542,6 +1551,22 @@ pub async fn load_project_file(state: State<'_, AppState>, path: String) -> Resu
                 config.id, config.default_slave_id
             ));
         }
+        config
+            .socks5
+            .validate()
+            .map_err(|error| format!("connection {}: {error}", config.id))?;
+        if config.socks5.enabled
+            && matches!(
+                &config.transport,
+                project::TransportConfig::Rtu { .. } | project::TransportConfig::Ascii { .. }
+            )
+        {
+            return Err(format!(
+                "connection {} uses SOCKS5 with a serial transport",
+                config.id
+            ));
+        }
+        let socks5 = config.socks5.clone();
         let (transport, tls, target_address, port) =
             master_transport_from_project(config.transport);
         let master_config = MasterConfig {
@@ -1550,6 +1575,7 @@ pub async fn load_project_file(state: State<'_, AppState>, path: String) -> Resu
             slave_id: config.default_slave_id,
             timeout_ms: config.timeout_ms.max(1),
             tls,
+            socks5,
         };
         let log_collector = Arc::new(LogCollector::new());
         let mut connection = MasterConnection::new(master_config, transport)

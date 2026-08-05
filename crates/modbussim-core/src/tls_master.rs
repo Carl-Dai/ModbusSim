@@ -9,6 +9,7 @@ use crate::master::{
     ReadResult,
 };
 use crate::mbap;
+use crate::socks5::{connect_tcp, Socks5Config, TcpConnectError};
 use crate::transport::TlsConfig;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
@@ -196,16 +197,19 @@ pub async fn connect_tls(
     host: &str,
     port: u16,
     tls_config: &TlsConfig,
+    socks5: &Socks5Config,
     timeout: Duration,
 ) -> Result<TlsMasterConnection, MasterError> {
-    let addr = format!("{}:{}", host, port);
     let host_owned = host.to_string();
 
     // TCP connect with timeout
-    let tcp_stream = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addr))
-        .await
-        .map_err(|_| MasterError::Timeout("TLS TCP connect timed out".into()))?
-        .map_err(|e| MasterError::ConnectionFailed(format!("TCP connect: {e}")))?;
+    let tcp_stream =
+        connect_tcp(host, port, socks5, timeout)
+            .await
+            .map_err(|error| match error {
+                TcpConnectError::Timeout(message) => MasterError::Timeout(message),
+                TcpConnectError::Connection(message) => MasterError::ConnectionFailed(message),
+            })?;
 
     // Convert to std TcpStream for native_tls.
     // tokio's into_std() leaves the socket in non-blocking mode; switch to blocking mode

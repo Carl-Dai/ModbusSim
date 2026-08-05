@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::config::RegisterValues;
 use crate::reconnect::ReconnectPolicy;
 use crate::register::RegisterDef;
+use crate::socks5::Socks5Config;
 use crate::transport::{SlaveTlsConfig, TlsConfig};
 
 /// Project type: slave or master.
@@ -131,6 +132,8 @@ pub struct ConnectionConfig {
     pub timeout_ms: u64,
     #[serde(default)]
     pub reconnect_policy: ReconnectPolicy,
+    #[serde(default, skip_serializing_if = "Socks5Config::is_disabled")]
+    pub socks5: Socks5Config,
 }
 
 fn default_slave_id() -> u8 {
@@ -259,6 +262,7 @@ mod tests {
             default_slave_id: 1,
             timeout_ms: 3000,
             reconnect_policy: ReconnectPolicy::default(),
+            socks5: Socks5Config::default(),
         });
 
         save_project(&project, &path).unwrap();
@@ -323,6 +327,13 @@ mod tests {
             default_slave_id: 1,
             timeout_ms: 3000,
             reconnect_policy: ReconnectPolicy::default(),
+            socks5: Socks5Config {
+                enabled: true,
+                host: "proxy.example.com".to_string(),
+                port: 1080,
+                username: "operator".to_string(),
+                password: "secret".to_string(),
+            },
         });
 
         save_project(&project, &path).unwrap();
@@ -334,6 +345,10 @@ mod tests {
         let conn = &loaded.connections[0];
         assert_eq!(conn.id, "conn-m1");
         assert_eq!(conn.scan_groups.len(), 1);
+        assert!(conn.socks5.enabled);
+        assert_eq!(conn.socks5.host, "proxy.example.com");
+        assert_eq!(conn.socks5.username, "operator");
+        assert_eq!(conn.socks5.password, "secret");
 
         let sg = &conn.scan_groups[0];
         assert_eq!(sg.name, "Fast Poll");
@@ -383,6 +398,7 @@ mod tests {
             default_slave_id: 1,
             timeout_ms: 3000,
             reconnect_policy: ReconnectPolicy::default(),
+            socks5: Socks5Config::default(),
         });
 
         save_project(&project, &path).unwrap();
@@ -412,6 +428,7 @@ mod tests {
         let device = &loaded.connections[0].devices[0];
         assert!(device.name.is_empty());
         assert!(device.register_defs.is_empty());
+        assert!(!loaded.connections[0].socks5.enabled);
     }
 
     #[test]
@@ -461,10 +478,12 @@ mod tests {
             default_slave_id: 1,
             timeout_ms: 3000,
             reconnect_policy: ReconnectPolicy::default(),
+            socks5: Socks5Config::default(),
         });
 
         let json = serde_json::to_string(&project).unwrap();
         assert!(json.contains(r#""type":"tcp""#));
+        assert!(!json.contains("socks5"));
 
         let loaded: ProjectFile = serde_json::from_str(&json).unwrap();
         match &loaded.connections[0].transport {
@@ -496,6 +515,7 @@ mod tests {
                 default_slave_id: 1,
                 timeout_ms: 3000,
                 reconnect_policy: ReconnectPolicy::default(),
+                socks5: Socks5Config::default(),
             }],
         };
         let json = serde_json::to_string(&proj).unwrap();
@@ -586,6 +606,7 @@ mod tests {
                 default_slave_id: 1,
                 timeout_ms: 3000,
                 reconnect_policy: ReconnectPolicy::default(),
+                socks5: Socks5Config::default(),
             }],
         };
 

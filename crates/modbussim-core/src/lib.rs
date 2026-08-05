@@ -20,6 +20,7 @@ pub mod rtu_slave;
 pub mod rtu_tcp_master;
 pub mod rtu_tcp_slave;
 pub mod slave;
+pub mod socks5;
 pub mod tls_master;
 pub mod tls_slave;
 pub mod tools;

@@ -4,11 +4,11 @@ use crate::log_entry::{Direction, FunctionCode, LogEntry};
 use crate::reconnect::ReconnectPolicy;
 use crate::rtu_master::RtuMasterTransport;
 use crate::rtu_tcp_master::RtuTcpMasterTransport;
+use crate::socks5::{connect_tcp, Socks5Config, TcpConnectError};
 use crate::tls_master::TlsMasterConnection;
 use crate::transport::{TlsConfig, Transport};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
@@ -25,6 +25,8 @@ pub struct MasterConfig {
     pub timeout_ms: u64,
     #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
+    pub socks5: Socks5Config,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -39,6 +41,7 @@ impl Default for MasterConfig {
             slave_id: 1,
             timeout_ms: default_timeout_ms(),
             tls: TlsConfig::default(),
+            socks5: Socks5Config::default(),
         }
     }
 }
@@ -187,16 +190,10 @@ impl MasterConnection {
 
         let ctx = match &self.transport {
             Transport::Tcp { host, port } => {
-                let addr: SocketAddr = format!("{}:{}", host, port)
-                    .parse()
-                    .map_err(|e| MasterError::ConnectionFailed(format!("Invalid address: {e}")))?;
-                let tcp_ctx = tokio::time::timeout(
-                    timeout,
-                    tcp::connect_slave(addr, Slave(self.config.slave_id)),
-                )
-                .await
-                .map_err(|_| MasterError::Timeout("Connection timed out".to_string()))?
-                .map_err(|e| MasterError::ConnectionFailed(format!("{e}")))?;
+                let stream = connect_tcp(host, *port, &self.config.socks5, timeout)
+                    .await
+                    .map_err(map_tcp_connect_error)?;
+                let tcp_ctx = tcp::attach_slave(stream, Slave(self.config.slave_id));
                 TransportCtx::Tcp(Arc::new(Mutex::new(tcp_ctx)))
             }
             Transport::Rtu(serial_config) => {
@@ -212,14 +209,21 @@ impl MasterConnection {
                 TransportCtx::Ascii(Arc::new(ascii))
             }
             Transport::RtuOverTcp { host, port } => {
-                let rtu_tcp = RtuTcpMasterTransport::connect(host, *port, timeout)
-                    .await
-                    .map_err(MasterError::ConnectionFailed)?;
+                let rtu_tcp =
+                    RtuTcpMasterTransport::connect(host, *port, &self.config.socks5, timeout)
+                        .await
+                        .map_err(MasterError::ConnectionFailed)?;
                 TransportCtx::RtuTcp(Arc::new(rtu_tcp))
             }
             Transport::TcpTls { host, port } => {
-                let tls_conn =
-                    crate::tls_master::connect_tls(host, *port, &self.config.tls, timeout).await?;
+                let tls_conn = crate::tls_master::connect_tls(
+                    host,
+                    *port,
+                    &self.config.tls,
+                    &self.config.socks5,
+                    timeout,
+                )
+                .await?;
                 TransportCtx::TcpTls(Arc::new(tls_conn))
             }
         };
@@ -674,6 +678,13 @@ impl MasterConnection {
     }
 }
 
+fn map_tcp_connect_error(error: TcpConnectError) -> MasterError {
+    match error {
+        TcpConnectError::Timeout(message) => MasterError::Timeout(message),
+        TcpConnectError::Connection(message) => MasterError::ConnectionFailed(message),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PDU helpers for non-TCP transports
 // ---------------------------------------------------------------------------
@@ -1124,6 +1135,7 @@ mod tests {
         assert_eq!(config.port, 502);
         assert_eq!(config.slave_id, 1);
         assert_eq!(config.timeout_ms, 3000);
+        assert!(!config.socks5.enabled);
     }
 
     #[test]

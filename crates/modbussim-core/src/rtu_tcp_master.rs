@@ -4,6 +4,7 @@
 //! A `Mutex` serializes access to the TCP stream.
 
 use crate::frame;
+use crate::socks5::{connect_tcp, Socks5Config};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,12 +16,15 @@ pub struct RtuTcpMasterTransport {
 
 impl RtuTcpMasterTransport {
     /// Connect to a remote RTU-over-TCP server.
-    pub async fn connect(host: &str, port: u16, timeout: Duration) -> Result<Self, String> {
-        let addr = format!("{}:{}", host, port);
-        let stream = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addr))
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        socks5: &Socks5Config,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let stream = connect_tcp(host, port, socks5, timeout)
             .await
-            .map_err(|_| format!("connection timeout: {}", addr))?
-            .map_err(|e| format!("connection failed: {}", e))?;
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             stream: Arc::new(Mutex::new(stream)),
         })

@@ -222,6 +222,7 @@ async fn test_tls_read_holding_registers() {
         slave_id: 1,
         timeout_ms: 5000,
         tls: tls_config,
+        ..Default::default()
     };
     let master_transport = Transport::TcpTls {
         host: "127.0.0.1".to_string(),
@@ -307,6 +308,7 @@ async fn test_tls_accept_invalid_certs() {
         slave_id: 1,
         timeout_ms: 5000,
         tls: tls_config,
+        ..Default::default()
     };
     let master_transport = Transport::TcpTls {
         host: "127.0.0.1".to_string(),

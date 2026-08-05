@@ -1622,6 +1622,7 @@ pub async fn save_project_file(state: State<'_, AppState>, path: String) -> Resu
             default_slave_id: 1,
             timeout_ms: 3000,
             reconnect_policy: Default::default(),
+            socks5: Default::default(),
         };
         proj.connections.push(conn_config);
     }
