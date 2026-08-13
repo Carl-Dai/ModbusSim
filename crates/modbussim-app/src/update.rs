@@ -1,15 +1,15 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_store::StoreExt;
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
+use tokio::sync::Mutex;
 
 const STORE_FILE: &str = "update_state.json";
 const KEY_LAST_CHECK: &str = "last_check_at";
-const KEY_SNOOZED_VER: &str = "snoozed_version";
-const KEY_SNOOZED_UNTIL: &str = "snoozed_until";
+const KEY_SKIPPED_VERSION: &str = "skipped_version";
+const KEY_INSTALL_ON_NEXT_LAUNCH: &str = "install_on_next_launch";
 const THROTTLE_HOURS: i64 = 6;
-const SNOOZE_HOURS: i64 = 24;
 
 #[derive(Serialize, Clone)]
 pub struct UpdateMeta {
@@ -18,9 +18,27 @@ pub struct UpdateMeta {
     pub pub_date: Option<String>,
 }
 
+struct PreparedUpdate {
+    meta: UpdateMeta,
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+pub struct UpdateState {
+    prepared: Mutex<Option<PreparedUpdate>>,
+}
+
 fn read_str(app: &AppHandle, key: &str) -> Option<String> {
     let store = app.store(STORE_FILE).ok()?;
     store.get(key).and_then(|v| v.as_str().map(String::from))
+}
+
+fn read_bool(app: &AppHandle, key: &str) -> bool {
+    let Ok(store) = app.store(STORE_FILE) else {
+        return false;
+    };
+    store.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 fn write_str(app: &AppHandle, key: &str, value: &str) {
@@ -30,19 +48,59 @@ fn write_str(app: &AppHandle, key: &str, value: &str) {
     }
 }
 
+fn write_bool(app: &AppHandle, key: &str, value: bool) {
+    if let Ok(store) = app.store(STORE_FILE) {
+        store.set(key, serde_json::Value::Bool(value));
+        let _ = store.save();
+    }
+}
+
+fn remove_value(app: &AppHandle, key: &str) {
+    if let Ok(store) = app.store(STORE_FILE) {
+        store.delete(key);
+        let _ = store.save();
+    }
+}
+
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
     s.and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-// `force = true` (toolbar button) bypasses the 6h throttle and 24h snooze.
-// Startup auto-checks pass `force = None / false`.
+fn update_meta(update: &Update) -> UpdateMeta {
+    UpdateMeta {
+        version: update.version.clone(),
+        notes: update.body.clone().unwrap_or_default(),
+        pub_date: update.date.map(|d| d.to_string()),
+    }
+}
+
+async fn download_update(update: &Update) -> Result<Vec<u8>, String> {
+    update
+        .download(
+            |_, _| {},
+            || log::info!("update download finished; verifying release signature"),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn check_for_update(
     app: AppHandle,
+    state: State<'_, UpdateState>,
     force: Option<bool>,
 ) -> Result<Option<UpdateMeta>, String> {
     let force = force.unwrap_or(false);
+    if !force && read_bool(&app, KEY_INSTALL_ON_NEXT_LAUNCH) {
+        return Ok(None);
+    }
+
+    let mut prepared = state.prepared.lock().await;
+    if let Some(update) = prepared.as_ref() {
+        return Ok(Some(update.meta.clone()));
+    }
+
     let now = Utc::now();
     if !force {
         let last = parse_ts(read_str(&app, KEY_LAST_CHECK));
@@ -53,65 +111,111 @@ pub async fn check_for_update(
     write_str(&app, KEY_LAST_CHECK, &now.to_rfc3339());
 
     let updater = app.updater().map_err(|e| e.to_string())?;
-    // Surface fetch / parse failures to the caller so the UI can distinguish
-    // "already on latest" (Ok(None)) from "endpoint unreachable / 404"; the
-    // frontend silences this only for the startup auto-check.
-    let update = updater.check().await.map_err(|e| e.to_string())?;
-    let Some(update) = update else {
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
         return Ok(None);
     };
-
-    if !force {
-        let snoozed_v = read_str(&app, KEY_SNOOZED_VER);
-        let snoozed_u = parse_ts(read_str(&app, KEY_SNOOZED_UNTIL));
-        if is_snoozed(snoozed_v.as_deref(), snoozed_u, &update.version, now) {
-            return Ok(None);
-        }
+    if !force
+        && is_skipped(
+            read_str(&app, KEY_SKIPPED_VERSION).as_deref(),
+            &update.version,
+        )
+    {
+        return Ok(None);
     }
 
-    Ok(Some(UpdateMeta {
-        version: update.version.clone(),
-        notes: update.body.clone().unwrap_or_default(),
-        pub_date: update.date.map(|d| d.to_string()),
-    }))
+    let meta = update_meta(&update);
+    let bytes = download_update(&update).await?;
+    *prepared = Some(PreparedUpdate {
+        meta: meta.clone(),
+        update,
+        bytes,
+    });
+    Ok(Some(meta))
 }
 
 #[tauri::command]
-pub async fn install_update(app: AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no update available".to_string())?;
-
-    let mut downloaded: u64 = 0;
-    let app_clone = app.clone();
-    update
-        .download_and_install(
-            move |chunk_len, content_len| {
-                downloaded += chunk_len as u64;
-                if let Some(total) = content_len {
-                    let pct = (downloaded as f64 / total as f64 * 100.0).round() as u32;
-                    let _ = app_clone.emit("update-progress", pct);
-                }
-            },
-            || {
-                log::info!("update downloaded, installing");
-            },
-        )
-        .await
+pub async fn install_update(app: AppHandle, state: State<'_, UpdateState>) -> Result<(), String> {
+    let prepared = state.prepared.lock().await;
+    let ready = prepared
+        .as_ref()
+        .ok_or_else(|| "update package is not ready".to_string())?;
+    ready
+        .update
+        .install(&ready.bytes)
         .map_err(|e| e.to_string())?;
-
-    app.restart();
+    remove_value(&app, KEY_SKIPPED_VERSION);
+    remove_value(&app, KEY_INSTALL_ON_NEXT_LAUNCH);
+    drop(prepared);
+    app.restart()
 }
 
 #[tauri::command]
-pub fn snooze_update(app: AppHandle, version: String) -> Result<(), String> {
-    let until = Utc::now() + Duration::hours(SNOOZE_HOURS);
-    write_str(&app, KEY_SNOOZED_VER, &version);
-    write_str(&app, KEY_SNOOZED_UNTIL, &until.to_rfc3339());
+pub async fn skip_update(
+    app: AppHandle,
+    state: State<'_, UpdateState>,
+    version: String,
+) -> Result<(), String> {
+    let mut prepared = state.prepared.lock().await;
+    if !prepared
+        .as_ref()
+        .is_some_and(|update| update.meta.version == version)
+    {
+        return Err("update package is not ready".to_string());
+    }
+    *prepared = None;
+    write_str(&app, KEY_SKIPPED_VERSION, &version);
+    remove_value(&app, KEY_INSTALL_ON_NEXT_LAUNCH);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn schedule_update_on_next_launch(
+    app: AppHandle,
+    state: State<'_, UpdateState>,
+    version: String,
+) -> Result<(), String> {
+    let prepared = state.prepared.lock().await;
+    if !prepared
+        .as_ref()
+        .is_some_and(|update| update.meta.version == version)
+    {
+        return Err("update package is not ready".to_string());
+    }
+    write_bool(&app, KEY_INSTALL_ON_NEXT_LAUNCH, true);
+    remove_value(&app, KEY_SKIPPED_VERSION);
+    Ok(())
+}
+
+pub async fn install_pending_update(app: AppHandle) -> Result<(), String> {
+    if !read_bool(&app, KEY_INSTALL_ON_NEXT_LAUNCH) {
+        return Ok(());
+    }
+
+    let state = app.state::<UpdateState>();
+    let mut prepared = state.prepared.lock().await;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        remove_value(&app, KEY_INSTALL_ON_NEXT_LAUNCH);
+        return Ok(());
+    };
+    let meta = update_meta(&update);
+    let bytes = download_update(&update).await?;
+    *prepared = Some(PreparedUpdate {
+        meta,
+        update,
+        bytes,
+    });
+    let ready = prepared
+        .as_ref()
+        .expect("prepared update was just inserted");
+    ready
+        .update
+        .install(&ready.bytes)
+        .map_err(|e| e.to_string())?;
+    remove_value(&app, KEY_SKIPPED_VERSION);
+    remove_value(&app, KEY_INSTALL_ON_NEXT_LAUNCH);
+    drop(prepared);
+    app.restart()
 }
 
 pub fn should_check(
@@ -125,14 +229,6 @@ pub fn should_check(
     }
 }
 
-pub fn is_snoozed(
-    snoozed_version: Option<&str>,
-    snoozed_until: Option<DateTime<Utc>>,
-    remote_version: &str,
-    now: DateTime<Utc>,
-) -> bool {
-    match (snoozed_version, snoozed_until) {
-        (Some(v), Some(until)) => v == remote_version && now < until,
-        _ => false,
-    }
+pub fn is_skipped(skipped_version: Option<&str>, remote_version: &str) -> bool {
+    skipped_version == Some(remote_version)
 }
