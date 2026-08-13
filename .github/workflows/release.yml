@@ -4,167 +4,273 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    permissions:
-      contents: write
+  validate-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate tag and release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid stable release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          if [ "$GITHUB_SHA" != "$(git rev-list -n 1 "$RELEASE_TAG")" ]; then
+            echo "::error::Workflow ref $GITHUB_SHA does not match $RELEASE_TAG"
+            exit 1
+          fi
+          node scripts/prepare-release.mjs verify "$RELEASE_TAG"
+
+  build:
+    name: Build ${{ matrix.app.role }} (${{ matrix.target.label }})
+    needs: validate-release
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
+        app:
+          - role: Slave
+            frontend: frontend
+            project: crates/modbussim-app
+            crate_bin: modbussim-app
+            product: ModbusSlave
+          - role: Master
+            frontend: master-frontend
+            project: crates/modbusmaster-app
+            crate_bin: modbusmaster-app
+            product: ModbusMaster
+        target:
+          - label: macOS Apple Silicon
+            platform: macos-latest
             args: '--target aarch64-apple-darwin'
-          - platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            win_arch: ''
+          - label: macOS Intel
+            platform: macos-latest
             args: '--target x86_64-apple-darwin'
-          - platform: ubuntu-22.04
+            rust_target: x86_64-apple-darwin
+            win_arch: ''
+          - label: Linux x64
+            platform: ubuntu-22.04
             args: ''
-          - platform: windows-latest
+            rust_target: ''
+            win_arch: ''
+          - label: Windows x64
+            platform: windows-latest
             args: ''
-    runs-on: ${{ matrix.platform }}
-
+            rust_target: ''
+            win_arch: x64
+          - label: Windows ARM64
+            platform: windows-latest
+            args: '--target aarch64-pc-windows-msvc'
+            rust_target: aarch64-pc-windows-msvc
+            win_arch: arm64
+    runs-on: ${{ matrix.target.platform }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Install dependencies (Ubuntu)
+        if: matrix.target.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
 
-      # --- Install all frontend dependencies from the reviewed workspace lockfile ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '${{ matrix.app.project }} -> ../../target'
+
       - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
+        # Install only from the reviewed workspace lockfile; lifecycle scripts
+        # are unnecessary for the frontend build and remain disabled in CI.
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # --- ModbusSlave ---
-      - name: Build slave frontend
-        working-directory: frontend
+      - name: Build frontend
+        working-directory: ${{ matrix.app.frontend }}
         run: npm run build
 
-      - name: Build and release ModbusSlave
+      - name: Build and upload ${{ matrix.app.product }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          projectPath: crates/modbussim-app
-          tagName: ${{ github.ref_name }}
-          releaseName: 'ModbusSim ${{ github.ref_name }}'
-          releaseBody: |
-            ## Downloads
-
-            **ModbusSlave** - Modbus TCP 从站模拟器
-            **ModbusMaster** - Modbus TCP 主站工具
-
-            See the assets below to download for your platform.
-          # Keep the release a draft during the build: GitHub's
-          # `releases/latest` skips drafts, so existing users' update checks
-          # keep hitting the previous *complete* release. publish-manifest
-          # clears the draft flag once installers + manifest are all in.
+          projectPath: ${{ matrix.app.project }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'ModbusSim ${{ env.RELEASE_TAG }}'
+          releaseBody: 'See the assets below to download ModbusSlave and ModbusMaster for your platform.'
+          # Keep the release hidden until every one of the 10 build jobs has
+          # completed and the updater manifests are ready to be generated.
           releaseDraft: true
           prerelease: false
-          # The project ships its own latest-slave/master.json via
-          # gen-update-manifest; tauri-action's latest.json is unused. Being a
-          # single shared filename, every parallel matrix job clobbers it —
-          # a known "delete-a-release-asset" 404 race. Skip it.
+          # ModbusSim publishes separate slave/master manifests. A shared
+          # latest.json from each parallel job would race and is not consumed.
           includeUpdaterJson: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.target.args }}
 
-      # --- ModbusMaster ---
-      - name: Build master frontend
-        working-directory: master-frontend
-        run: npm run build
-
-      - name: Build and release ModbusMaster
-        uses: tauri-apps/tauri-action@v0
+      # tauri-action does not retry every bundle upload. Parallel jobs sharing
+      # a draft release can hit GitHub's delete/upload race, so re-upload this
+      # job's artifacts idempotently with bounded retries.
+      - name: Re-upload bundles with retry
+        if: always()
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: crates/modbusmaster-app
-          tagName: ${{ github.ref_name }}
-          releaseName: 'ModbusSim ${{ github.ref_name }}'
-          releaseBody: |
-            ## Downloads
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ matrix.target.rust_target }}" ]; then
+            BUNDLE_DIR="target/${{ matrix.target.rust_target }}/release/bundle"
+          else
+            BUNDLE_DIR="target/release/bundle"
+          fi
+          if [ ! -d "$BUNDLE_DIR" ]; then
+            echo "::warning::bundle dir $BUNDLE_DIR not found; skipping bundle re-upload"
+            exit 0
+          fi
+          upload_one() {
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$RELEASE_TAG" "$1" --clobber; then return 0; fi
+              echo "::warning::upload $(basename "$1") attempt $attempt failed, retrying in 15s"
+              sleep 15
+            done
+            return 1
+          }
+          case "${{ matrix.target.rust_target }}" in
+            aarch64-apple-darwin) ARCH=aarch64 ;;
+            x86_64-apple-darwin) ARCH=x64 ;;
+            *) ARCH="" ;;
+          esac
+          fail=0
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            name="$(basename "$file")"
+            # Tauri's macOS updater bundle has no arch suffix on disk, while
+            # tauri-action uploads an arch-qualified name. Match that contract.
+            case "$name" in
+              *.app.tar.gz|*.app.tar.gz.sig)
+                if [ -n "$ARCH" ]; then
+                  base="${name%%.app.tar.gz*}"
+                  rest="${name#"$base"}"
+                  cp "$file" "$(dirname "$file")/${base}_${ARCH}${rest}"
+                  file="$(dirname "$file")/${base}_${ARCH}${rest}"
+                fi ;;
+            esac
+            upload_one "$file" || { echo "::error::failed to upload $(basename "$file")"; fail=1; }
+          done < <(find "$BUNDLE_DIR" -type f \( \
+            -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \
+            -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \
+            -o -name '*.msi' -o -name '*.msi.sig' \
+            -o -name '*.AppImage' -o -name '*.AppImage.sig' \
+            -o -name '*.deb' -o -name '*.deb.sig' \
+            -o -name '*.rpm' -o -name '*.rpm.sig' \) )
+          exit $fail
 
-            **ModbusSlave** - Modbus TCP 从站模拟器
-            **ModbusMaster** - Modbus TCP 主站工具
-
-            See the assets below to download for your platform.
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: false
-          args: ${{ matrix.args }}
+      - name: Upload Windows portable exe
+        if: always() && matrix.target.platform == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          ARCH="${{ matrix.target.win_arch }}"
+          if [ -n "${{ matrix.target.rust_target }}" ]; then
+            SRC="target/${{ matrix.target.rust_target }}/release/${{ matrix.app.crate_bin }}.exe"
+          else
+            SRC="target/release/${{ matrix.app.crate_bin }}.exe"
+          fi
+          if [ ! -f "$SRC" ]; then
+            echo "::warning::cargo binary $SRC not found; skipping portable upload"
+            exit 0
+          fi
+          DEST="${{ matrix.app.product }}_${VERSION}_${ARCH}-portable.exe"
+          cp "$SRC" "$DEST"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "$RELEASE_TAG" "$DEST" --clobber; then exit 0; fi
+            echo "::warning::portable upload attempt $attempt failed, retrying in 10s"
+            sleep 10
+          done
+          echo "::error::portable upload failed after 5 attempts"
+          exit 1
 
   publish-manifest:
-    needs: release
+    needs: build
     runs-on: ubuntu-latest
-    # Needs write access so the GITHUB_TOKEN can list the draft release (drafts
-    # are only visible to tokens with push access) and PATCH it to published.
-    # Without this the "clear draft flag" step's release lookup returns empty
-    # and the job fails with "draft release not found".
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Un-draft first: this job only runs once every build succeeded, so the
-      # release is now complete enough to go live. Publishing here (rather than
-      # last) lets the manifest script run against a normal published release
-      # — `releases/tags/<tag>` and public asset URLs all work. The residual
-      # window where `releases/latest` lacks the update manifest shrinks from
-      # the whole build to the few seconds of manifest generation.
+
+      # Draft releases are not returned by /releases/tags/<tag>. Resolve the
+      # numeric id from the authenticated list endpoint, then publish by id.
       - name: Publish release (clear draft flag)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # `gh release edit <tag>` (and `gh api releases/tags/<tag>`) resolve the
-        # release via GitHub's /releases/tags/<tag> endpoint, which DOES NOT
-        # return drafts — it 404s with "release not found". Resolve the draft's
-        # numeric id via the list endpoint (which includes drafts) and PATCH it
-        # by id instead. Everything after this point sees a published release.
+        shell: bash
         run: |
-          rid=$(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.tag_name=="${{ github.ref_name }}") | .id')
-          if [ -z "$rid" ]; then
-            echo "::error::draft release for ${{ github.ref_name }} not found"; exit 1
+          set -euo pipefail
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name==\"$RELEASE_TAG\") | .id" | head -n 1)"
+          if [ -z "$release_id" ]; then
+            echo "::error::draft release for $RELEASE_TAG not found"
+            exit 1
           fi
-          gh api -X PATCH repos/${{ github.repository }}/releases/"$rid" -F draft=false
-      - name: Generate manifests
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false
+
+      - name: Generate updater manifests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/gen-update-manifest.mjs ${{ github.ref_name }}
-      - name: Upload manifests to release
+        run: node scripts/gen-update-manifest.mjs "$RELEASE_TAG"
+
+      - name: Upload updater manifests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           for attempt in 1 2 3 4 5; do
-            if gh release upload ${{ github.ref_name }} \
-              latest-slave.json latest-slave-cn0.json latest-slave-cn1.json latest-slave-cn2.json latest-slave-cn3.json \
-              latest-master.json latest-master-cn0.json latest-master-cn1.json latest-master-cn2.json latest-master-cn3.json \
+            if gh release upload "$RELEASE_TAG" \
+              latest-slave*.json \
+              latest-master*.json \
               --clobber; then exit 0; fi
             echo "::warning::manifest upload attempt $attempt failed, retrying in 10s"
             sleep 10
           done
-          echo "::error::manifest upload failed after 5 attempts"; exit 1
+          echo "::error::manifest upload failed after 5 attempts"
+          exit 1
 
       - name: Render rich release body from CHANGELOG
-        run: node scripts/build-release-notes.mjs ${{ github.ref_name }}
+        run: node scripts/build-release-notes.mjs "$RELEASE_TAG"
 
       - name: Replace release body
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit ${{ github.ref_name }} --notes-file RELEASE_BODY.md
+        run: gh release edit "$RELEASE_TAG" --notes-file RELEASE_BODY.md
