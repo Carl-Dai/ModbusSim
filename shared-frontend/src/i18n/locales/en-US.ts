@@ -360,12 +360,12 @@ const messages: Messages = {
     available: 'Update available',
     newVersion: 'Version v{version} is available',
     changelog: 'Release notes',
+    ready: 'The update was downloaded and verified in the background.',
     installNow: 'Install now',
-    later: 'Later',
-    downloading: 'Downloading {pct}%',
+    installNextLaunch: 'Update on next launch',
+    skip: 'Skip this version',
+    working: 'Working…',
     failedTitle: 'Update failed',
-    retry: 'Retry',
-    close: 'Close',
   },
 }
 

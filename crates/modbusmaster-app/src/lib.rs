@@ -14,6 +14,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_aptabase::Builder::new(analytics::APTABASE_KEY).build())
         .manage(AppState::new())
+        .manage(update::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
             // Connection commands
             commands::create_master_connection,
@@ -60,7 +61,8 @@ pub fn run() {
             // Update commands
             update::check_for_update,
             update::install_update,
-            update::snooze_update,
+            update::skip_update,
+            update::schedule_update_on_next_launch,
             // Analytics commands
             analytics::get_analytics_enabled,
             analytics::set_analytics_enabled,
@@ -75,6 +77,13 @@ pub fn run() {
                 )?;
             }
             analytics::track_started(app.handle());
+
+            let update_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = update::install_pending_update(update_app).await {
+                    log::warn!("automatic update on launch failed: {error}");
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())

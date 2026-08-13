@@ -1,0 +1,100 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ matrix.platform == 'ubuntu-22.04' && 'rustfmt,clippy' || '' }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: Swatinem/rust-cache@v2
+
+      # tauri::generate_context! requires both frontendDist directories at compile time.
+      - name: Create empty frontend dist dirs
+        shell: bash
+        run: mkdir -p frontend/dist master-frontend/dist
+
+      - name: Check Rust formatting
+        if: matrix.platform == 'ubuntu-22.04'
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust workspace
+        if: matrix.platform == 'ubuntu-22.04'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Validate release metadata
+        run: node scripts/prepare-release.mjs verify-current
+
+  frontend:
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [frontend, master-frontend]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Audit dependencies
+        if: matrix.app == 'frontend'
+        run: npm audit --audit-level=high
+
+      - name: Test shared frontend
+        if: matrix.app == 'frontend'
+        run: npm test --workspace shared-frontend
+
+      - name: Type-check and build
+        working-directory: ${{ matrix.app }}
+        run: npm run build
+
+  release-scripts:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test release automation
+        run: node --test scripts/*.test.mjs

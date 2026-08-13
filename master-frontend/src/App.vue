@@ -113,11 +113,6 @@ async function checkUpdate(force = false): Promise<UpdateMeta | null> {
 }
 provide('checkUpdate', checkUpdate)
 
-function snoozeUpdate() {
-  if (updateMeta.value) {
-    invoke('snooze_update', { version: updateMeta.value.version }).catch(() => {})
-  }
-}
 </script>
 
 <template>
@@ -150,7 +145,6 @@ function snoozeUpdate() {
       :version="updateMeta?.version ?? ''"
       :notes="updateMeta?.notes ?? ''"
       @close="updateVisible = false"
-      @snooze="snoozeUpdate"
     />
   </div>
 </template>

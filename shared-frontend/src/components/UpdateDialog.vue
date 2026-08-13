@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useI18n } from '../i18n'
 
 const { t } = useI18n()
@@ -13,13 +12,10 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'snooze'): void
 }>()
 
-const downloading = ref(false)
-const progress = ref(0)
+const busy = ref(false)
 const error = ref<string | null>(null)
-let unlisten: UnlistenFn | null = null
 
 // --- Lightweight markdown rendering -----------------------------------------
 // The release notes arrive as a Markdown CHANGELOG section. Rendering them as
@@ -70,33 +66,39 @@ const noteBlocks = computed<Block[]>(() => {
 
 // --- Actions ----------------------------------------------------------------
 
-async function install() {
+async function runAction(command: string, closeAfter: boolean) {
+  if (busy.value) return
   error.value = null
-  downloading.value = true
-  progress.value = 0
-  unlisten = await listen<number>('update-progress', (e) => {
-    progress.value = e.payload
-  })
+  busy.value = true
   try {
-    await invoke('install_update')
+    const args = command === 'install_update' ? undefined : { version: props.version }
+    await invoke(command, args)
+    if (closeAfter) emit('close')
   } catch (e: any) {
     error.value = String(e)
-    downloading.value = false
   } finally {
-    if (unlisten) { unlisten(); unlisten = null }
+    busy.value = false
   }
 }
 
-function later() {
-  emit('snooze')
-  emit('close')
+function installNow() {
+  return runAction('install_update', false)
+}
+
+function skip() {
+  return runAction('skip_update', true)
+}
+
+function installOnNextLaunch() {
+  return runAction('schedule_update_on_next_launch', true)
 }
 
 function onBackdrop() {
-  // Backdrop / Esc dismissal is a snooze, but never interrupt a download.
-  if (downloading.value) return
+  // Backdrop / Esc dismissal has the same durable meaning as "skip". Never
+  // interrupt a pending IPC action.
+  if (busy.value) return
   if (error.value) emit('close')
-  else later()
+  else void skip()
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -105,7 +107,6 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  if (unlisten) { unlisten(); unlisten = null }
 })
 </script>
 
@@ -126,6 +127,7 @@ onBeforeUnmount(() => {
           <!-- Body -->
           <div class="upd-body">
             <div class="upd-section-label">{{ t('update.changelog') }}</div>
+            <div class="upd-ready" role="status">{{ t('update.ready') }}</div>
             <div class="upd-notes" tabindex="0">
               <template v-for="(blk, i) in noteBlocks" :key="i">
                 <hr v-if="blk.kind === 'hr'" class="upd-hr" />
@@ -163,17 +165,6 @@ onBeforeUnmount(() => {
               </template>
             </div>
 
-            <!-- Download progress -->
-            <div v-if="downloading" class="upd-progress" aria-live="polite">
-              <div class="upd-progress-row">
-                <span>{{ t('update.downloading', { pct: progress }) }}</span>
-                <span class="upd-progress-pct">{{ progress }}%</span>
-              </div>
-              <div class="upd-track">
-                <div class="upd-fill" :style="{ transform: `scaleX(${progress / 100})` }"></div>
-              </div>
-            </div>
-
             <!-- Error -->
             <div v-if="error" class="upd-error" role="alert">
               <div class="upd-error-title">{{ t('update.failedTitle') }}</div>
@@ -183,15 +174,14 @@ onBeforeUnmount(() => {
 
           <!-- Footer -->
           <div class="upd-footer">
-            <template v-if="!downloading && !error">
-              <button class="btn btn-ghost" @click="later">{{ t('update.later') }}</button>
-              <button class="btn btn-primary" @click="install">{{ t('update.installNow') }}</button>
-            </template>
-            <template v-else-if="error">
-              <button class="btn btn-ghost" @click="$emit('close')">{{ t('update.close') }}</button>
-              <button class="btn btn-primary" @click="install">{{ t('update.retry') }}</button>
-            </template>
-            <span v-else class="upd-footer-hint">{{ t('update.downloading', { pct: progress }) }}</span>
+            <span v-if="busy" class="upd-footer-hint">{{ t('update.working') }}</span>
+            <button class="btn btn-ghost" :disabled="busy" @click="skip">{{ t('update.skip') }}</button>
+            <button class="btn btn-secondary" :disabled="busy" @click="installOnNextLaunch">
+              {{ t('update.installNextLaunch') }}
+            </button>
+            <button class="btn btn-primary" :disabled="busy" @click="installNow">
+              {{ t('update.installNow') }}
+            </button>
           </div>
         </div>
       </div>
@@ -259,6 +249,15 @@ onBeforeUnmount(() => {
   color: #a6adc8;
   margin-bottom: 8px;
 }
+.upd-ready {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(166, 227, 161, 0.28);
+  border-radius: 7px;
+  background: rgba(166, 227, 161, 0.08);
+  color: #a6e3a1;
+  font-size: 12px;
+}
 .upd-notes {
   background: #181825;
   border: 1px solid #313244;
@@ -323,34 +322,6 @@ onBeforeUnmount(() => {
   margin: 12px 0;
 }
 
-/* Progress */
-.upd-progress { margin-top: 14px; }
-.upd-progress-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: #bac2de;
-  margin-bottom: 6px;
-}
-.upd-progress-pct {
-  font-variant-numeric: tabular-nums;
-  color: #89b4fa;
-  font-weight: 600;
-}
-.upd-track {
-  height: 6px;
-  border-radius: 999px;
-  background: #313244;
-  overflow: hidden;
-}
-.upd-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: #89b4fa;
-  transform-origin: left;
-  transition: transform 200ms ease-out;
-}
-
 /* Error */
 .upd-error {
   margin-top: 14px;
@@ -389,9 +360,16 @@ onBeforeUnmount(() => {
   font-weight: 500;
   transition: background 140ms ease, border-color 140ms ease;
 }
+.btn:disabled { cursor: wait; opacity: 0.55; }
 .btn:focus-visible { outline: 2px solid #89b4fa; outline-offset: 2px; }
 .btn-primary { background: #89b4fa; color: #11111b; }
 .btn-primary:hover { background: #74c7ec; }
+.btn-secondary {
+  background: #313244;
+  color: #cdd6f4;
+  border-color: #45475a;
+}
+.btn-secondary:hover { background: #45475a; }
 .btn-ghost {
   background: transparent;
   color: #bac2de;
@@ -412,7 +390,4 @@ onBeforeUnmount(() => {
 .upd-notes::-webkit-scrollbar-track,
 .upd-body::-webkit-scrollbar-track { background: transparent; }
 
-@media (prefers-reduced-motion: reduce) {
-  .upd-fill { transition: none; }
-}
 </style>
