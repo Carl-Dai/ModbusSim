@@ -1498,6 +1498,10 @@ pub struct PointMutationInfo {
     pub register_type: String,
     pub address: u16,
     pub mode: String,
+    pub period_ms: u64,
+    pub step: f64,
+    pub min: f64,
+    pub max: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1507,7 +1511,8 @@ pub struct ListPointMutationsRequest {
     pub slave_id: u8,
 }
 
-/// List the points that currently have mutation enabled, with their mode.
+/// List the points that currently have mutation enabled, with their mode and
+/// full parameters (for the Simulation Settings drawer echo-back).
 #[tauri::command]
 pub async fn list_point_mutations(
     state: State<'_, AppState>,
@@ -1532,6 +1537,10 @@ pub async fn list_point_mutations(
                     register_type: register_type_to_str(d.register_type).to_string(),
                     address: d.address,
                     mode: mutation_mode_str(c.mode).to_string(),
+                    period_ms: c.period_ms,
+                    step: c.step,
+                    min: c.min,
+                    max: c.max,
                 })
         })
         .collect();

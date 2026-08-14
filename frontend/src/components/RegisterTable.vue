@@ -7,6 +7,7 @@ import RegisterModal from './RegisterModal.vue'
 import MutationConfigModal from './MutationConfigModal.vue'
 import DataSourceConfigModal from './DataSourceConfigModal.vue'
 import BatchAddModal from './BatchAddModal.vue'
+import SimulationSettingsDrawer from './SimulationSettingsDrawer.vue'
 import { useRegisterValues } from '../composables/useRegisterValues'
 import {
   formatU16, formatTypedValue, formatFloatPair, encodeTypedValue,
@@ -91,10 +92,13 @@ function startColumnResize(event: PointerEvent, key: ColumnKey) {
   }
 }
 
-// Point-mutation config modal
+// Point-mutation config modal + simulation settings drawer
 const showMutationModal = ref(false)
 const mutationTarget = ref<Register | undefined>(undefined)
 const mutationModes = ref<Record<string, MutationMode>>({})
+const mutationRows = ref<PointMutationInfo[]>([])
+const showSimDrawer = ref(false)
+const simTargetRegs = ref<Register[]>([])
 let mutationPollTimer: number | null = null
 const MODE_SYMBOL: Record<string, string> = { flip: '⇅', increment: '↑', decrement: '↓', random: '🎲' }
 function modeSymbol(mode?: string): string {
@@ -114,6 +118,7 @@ function pointMutationMode(reg: Register): MutationMode | undefined {
 async function refreshMutationIndicators() {
   if (!selectedConnectionId.value || selectedSlaveId.value === null) {
     mutationModes.value = {}
+    mutationRows.value = []
     return
   }
   try {
@@ -123,14 +128,42 @@ async function refreshMutationIndicators() {
         slave_id: selectedSlaveId.value,
       },
     })
+    mutationRows.value = rows
     mutationModes.value = Object.fromEntries(
       rows.map(row => [`${row.register_type}-${row.address}`, row.mode])
     )
   } catch {
     mutationModes.value = {}
+    mutationRows.value = []
   }
 }
 async function onMutationSaved() {
+  await loadRegisters()
+  await refreshMutationIndicators()
+}
+
+/** Live value string for a point, used by the Simulation Settings drawer. */
+function currentValueFor(reg: { register_type: string; address: number }): string {
+  const full = registers.value.find(
+    (r) => r.register_type === reg.register_type && r.address === reg.address,
+  )
+  const hi = getValueByKey(reg.register_type, reg.address)
+  if (!full) return String(hi)
+  const lo = is32BitType(full.data_type)
+    ? getValueByKey(reg.register_type, reg.address + 1)
+    : 0
+  return formatTypedValue(full, hi, lo)
+}
+
+function openSimulationSettings() {
+  const reg = contextMenu.value.reg
+  contextMenu.value.show = false
+  if (!reg) return
+  simTargetRegs.value = selectedRows.value.length > 0 ? [...selectedRows.value] : [reg]
+  showSimDrawer.value = true
+}
+
+async function onSimDrawerChanged() {
   await loadRegisters()
   await refreshMutationIndicators()
 }
@@ -611,6 +644,7 @@ function toggleAddrMode() {
       :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
       @click.stop
     >
+      <div class="context-menu-item" @click="openSimulationSettings">{{ t('simulationSettings.open') }}</div>
       <div class="context-menu-item danger" @click="deleteRegister">{{ t('registerEdit.deleteRegister') }}</div>
     </div>
 
@@ -642,6 +676,18 @@ function toggleAddrMode() {
       :slave-id="selectedSlaveId ?? 0"
       @close="showDataSourceModal = false"
       @saved="onDataSourceSaved"
+    />
+
+    <!-- Simulation Settings Drawer (batch point mutation) -->
+    <SimulationSettingsDrawer
+      :show="showSimDrawer"
+      :connection-id="selectedConnectionId ?? ''"
+      :slave-id="selectedSlaveId ?? 0"
+      :selected-regs="simTargetRegs"
+      :active-rows="mutationRows"
+      :current-value-for="currentValueFor"
+      @close="showSimDrawer = false"
+      @changed="onSimDrawerChanged"
     />
 
     <!-- Batch Add Modal -->

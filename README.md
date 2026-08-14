@@ -88,7 +88,7 @@ The bottom log panel records every request/response pair — direction, function
 - **Default initialization** — new slaves pre-fill addresses 0–20,000 across all four register types; batch-add supports up to 50,000 entries per operation
 - **Value panel** — Signed/Unsigned/Hex/Binary (16-bit), Long/Float (32-bit), Double (64-bit), all byte orders (AB CD / CD AB / BA DC / DC BA)
 - **Per-point data sources** — every register can run its own simulation source: Fixed, Random, Sine, Sawtooth, Triangle, Counter or CSV sequence playback; each point carries an independent update interval and wave parameters (amplitude / frequency / offset / phase / wave period), and the configuration round-trips through project save/load
-- **Per-point periodic mutation** — configure an independent mutation schedule on any register: discrete points flip, analog points ramp between min/max bounds with a configurable step; the minimum period is 100 ms, all schedules run concurrently and independently on a single 100 ms backend tick, and settings persist with the project
+- **Per-point periodic mutation** — right-click a register for single-point config, or multi-select rows and open the **Simulation Settings** drawer to apply one schedule (Flip / Increment / Decrement / Random) to every selected point at once; discrete points flip, analog points ramp between min/max bounds with a configurable step; the drawer lists all active simulations with mode, period, bounds and a **live current value**, each with per-row stop; the minimum period is 100 ms, all schedules run concurrently and independently on a single 100 ms backend tick, and settings persist with the project
 - **Communication log** — real-time TX/RX logging with search, direction/function-code filtering, and CSV export
 - **Project files** — save/load complete configurations as `.modbusproj` files for quick scenario switching
 - **Serial port support** — auto-detect system serial ports, configurable baud rate, data bits, stop bits, parity
@@ -225,7 +225,7 @@ Add scan groups (e.g. holding registers 0–59 and coils 0–31) and start polli
 Back on the Slave, make the registers move and watch them surface on the Master's next poll:
 
 - **Right-click → 数据源 (Data Source)** on any register — pick Fixed, Random, Sine, Sawtooth, Triangle, Counter or CSV sequence playback, each with its own update interval and wave parameters.
-- **Right-click → 周期变位 (Periodic Mutation)** on any register(s) — discrete points flip, analog points ramp between min/max bounds with a configurable step. The minimum period is 100 ms, and every point runs on its own independent schedule.
+- **Right-click → 模拟设置 (Open Simulation Settings)** on any row — or Ctrl/Shift multi-select several rows first — to apply one schedule (翻转 / 递增 / 递减 / 随机) to all selected points at once. The drawer also lists every active simulation with its live current value and a per-row stop; single-point tuning stays one right-click away via **周期变位 (Periodic Mutation)**.
 - Both settings persist in `.modbusproj` project files, so a saved scenario replays identically after reload.
 
 ### Step 5 · Master — write back

@@ -52,6 +52,10 @@ export interface PointMutationInfo {
   register_type: string
   address: number
   mode: MutationMode
+  period_ms: number
+  step: number
+  min: number
+  max: number
 }
 
 export const ENDIAN_TO_BYTEORDER: Record<string, ByteOrder> = {
