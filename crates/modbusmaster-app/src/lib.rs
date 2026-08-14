@@ -7,6 +7,11 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // tauri-plugin-aptabase starts a background task with tokio::spawn during
+    // plugin initialization, so enter a Tokio runtime before building Tauri.
+    let rt = tokio::runtime::Runtime::new().expect("failed to create Tokio runtime");
+    let _guard = rt.enter();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
