@@ -15,6 +15,8 @@ Built with **Rust** · **Tauri 2** · **Vue 3**
 **English** · [中文](README_CN.md)
 
 ![ModbusMaster polling a simulated slave over TCP](docs/screenshots/tut-3-master-data.png)
+<br>
+<sub>Slave register simulation → scan-group polling → random mutation → wire-level logs</sub>
 
 </div>
 
@@ -26,7 +28,8 @@ Testing a Modbus integration usually means wiring up a real PLC or borrowing a m
 
 - 🛰️ **Slave & Master in one repo** — simulate a field device, or drive one, with no external hardware.
 - 🔌 **Five transports, one core** — TCP, TCP+TLS, RTU, ASCII and RTU-over-TCP, covering function codes FC01–FC06 / FC15 / FC16.
-- 📈 **Built-in data simulation** — drive registers with fixed / random / sine / sawtooth / triangle / counter / CSV-playback sources; 20,000+ registers with virtual scrolling.
+- 📈 **Built-in data simulation** — every register can run its own data source (Fixed / Random / Sine / Sawtooth / Triangle / Counter / CSV playback) or an independent periodic mutation schedule; 20,000+ registers with virtual scrolling.
+- 🌐 **Network reach** — route Master TCP, TCP+TLS and RTU-over-TCP connections through a SOCKS5 proxy with optional authentication and proxy-side DNS.
 - 🖥️ **Native desktop app** — small Rust + Tauri binaries for Windows, macOS and Linux, with in-app auto-update.
 - 🌏 **Bilingual UI** — full English / 简体中文, switchable at runtime.
 
@@ -38,7 +41,7 @@ Testing a Modbus integration usually means wiring up a real PLC or borrowing a m
 - [Supported Function Codes](#supported-function-codes)
 - [Transport Modes](#transport-modes)
 - [Build from Source](#build-from-source)
-- [Quick Start](#quick-start)
+- [Quick Start (Tutorial)](#quick-start-tutorial)
 - [Architecture](#architecture)
 - [Contributing](#contributing)
 - [Changelog](#changelog)
@@ -53,6 +56,18 @@ Testing a Modbus integration usually means wiring up a real PLC or borrowing a m
 ModbusSlave runs a real Modbus TCP server on `0.0.0.0:502` with two slave devices. The register table virtual-scrolls through 20,000+ holding registers; **Random Mutation** changes values in place (orange flashes) and the value panel on the right decodes the selected register as Signed / Unsigned / Hex / Binary at once.
 
 ![ModbusSlave with running server, mutating registers and value panel](docs/screenshots/tut-1-slave.png)
+
+**Master · New Connection dialog**
+
+One dialog covers every transport — TCP (with optional TLS), RTU serial, ASCII serial or RTU-over-TCP — with target address, port, slave ID and timeout. Network transports also accept a **SOCKS5 proxy** with optional username/password authentication and proxy-side DNS resolution, so the target is reachable even behind a jump host or an industrial gateway.
+
+![New Connection dialog](docs/screenshots/tut-2-master-newconn.png)
+
+**Master · scan groups fill the table**
+
+Add scan groups (e.g. holding registers 0–59 and coils 0–31) with a custom poll interval per group and a per-group slave ID override. The connection tree shows each group's function code and range; the data table refreshes on every poll with the values served by the Slave, decoded as Unsigned / Signed / Hex / Binary / Float32.
+
+![Master data table polling the slave](docs/screenshots/tut-3-master-data.png)
 
 **Master · communication log with decoded TX/RX frames**
 
@@ -72,7 +87,8 @@ The bottom log panel records every request/response pair — direction, function
 - **Register table** — address search/filter, inline value editing, Ctrl/Shift multi-select, virtual scrolling (20,000+ registers), multi-format display (Auto / U16 / I16 / Hex / Bin / Float32 with 4 byte orders)
 - **Default initialization** — new slaves pre-fill addresses 0–20,000 across all four register types; batch-add supports up to 50,000 entries per operation
 - **Value panel** — Signed/Unsigned/Hex/Binary (16-bit), Long/Float (32-bit), Double (64-bit), all byte orders (AB CD / CD AB / BA DC / DC BA)
-- **Dynamic data sources** — simulate changing register values: Fixed, Random, Sine, Sawtooth, Triangle, Counter, CSV playback
+- **Per-point data sources** — every register can run its own simulation source: Fixed, Random, Sine, Sawtooth, Triangle, Counter or CSV sequence playback; each point carries an independent update interval and wave parameters (amplitude / frequency / offset / phase / wave period), and the configuration round-trips through project save/load
+- **Per-point periodic mutation** — configure an independent mutation schedule on any register: discrete points flip, analog points ramp between min/max bounds with a configurable step; the minimum period is 100 ms, all schedules run concurrently and independently on a single 100 ms backend tick, and settings persist with the project
 - **Communication log** — real-time TX/RX logging with search, direction/function-code filtering, and CSV export
 - **Project files** — save/load complete configurations as `.modbusproj` files for quick scenario switching
 - **Serial port support** — auto-detect system serial ports, configurable baud rate, data bits, stop bits, parity
@@ -81,6 +97,7 @@ The bottom log panel records every request/response pair — direction, function
 
 - **Multi-transport** — TCP, TCP+TLS, RTU (serial), ASCII (serial), RTU-over-TCP
 - **Modbus TCP over TLS** — TLS 1.2+ encryption, PEM and PKCS#12 certificate formats, accept-invalid-certs mode for self-signed certificate testing
+- **SOCKS5 proxy** — route TCP, TCP+TLS and RTU-over-TCP connections through a SOCKS5 proxy (IPv4/IPv6) with optional username/password authentication and proxy-side DNS resolution; credentials are redacted from Rust debug output and the UI explains the RFC 1929 / project-file security boundary
 - **Scan groups** — periodic polling with custom intervals per register group, per-group slave ID override
 - **Device discovery** — slave ID scan (1–247), register address scan, auto-add discovered devices to scan groups
 - **Multi-format data view** — Unsigned, Signed, Hex, Binary, Float32 (AB CD / CD AB), virtual scrolling
@@ -89,7 +106,7 @@ The bottom log panel records every request/response pair — direction, function
 - **Auto-reconnect** — configurable reconnection with exponential backoff (1s → 2s → 4s → … → 30s max)
 - **Project files** — save/load connection and scan group configurations
 - **Connection-on-scan** — auto-prompt to scan devices after a successful connection
-- **In-app auto-update** from GitHub Releases (signed bundles, 6 h check throttle, "later" snoozes 24 h)
+- **In-app auto-update** — silently downloads and verifies signed updates in the background, then offers install now / skip this version / install on next launch (6 h check throttle, "later" snoozes 24 h)
 
 ### 🧩 Shared Architecture
 
@@ -106,7 +123,7 @@ Pre-built installers for every platform are on the **[Releases page](https://git
 | macOS    | `.dmg` (Apple Silicon & Intel) |
 | Linux    | `.AppImage` / `.deb` / `.rpm` |
 
-Both apps **auto-update** from GitHub Releases since v0.16.0. macOS users need [one extra step on first launch](#macos-first-launch).
+Both apps **auto-update** from GitHub Releases since v0.16.0. Since v0.17.2 updates download and verify in the background first, then offer install now / skip this version / install on next launch. macOS users need [one extra step on first launch](#macos-first-launch).
 
 > **Note:** As of v0.16, the native egui edition (assets with the `-egui-` suffix) is discontinued. Please migrate to the Tauri installers listed above.
 
@@ -175,60 +192,83 @@ cd crates/modbusmaster-app && cargo tauri build
 cargo test --workspace
 ```
 
-## Quick Start
+## Quick Start (Tutorial)
 
-A full round-trip in four steps — drive the simulated Slave from the Master, no hardware required. (Screenshots show the Chinese UI; flip to English any time with the **中 / EN** toggle.)
+A full round-trip in six steps — drive the simulated Slave from the Master, no hardware required. (Screenshots show the Chinese UI; flip to English any time with the **中 / EN** toggle.)
 
-### 1 · Slave — create a server with registers
+> **Install first:** grab the installer for your platform from the [Releases page](#download), or run from source (`cargo tauri dev`). Open **both** `ModbusSlave` and `ModbusMaster`.
+
+### Step 1 · Slave — create a server with registers
 
 Open **ModbusSlave** and click **新建连接 (New Connection)**: pick TCP, a port (e.g. `502`) and random initialization — the server starts with a device pre-filled across all four register types (coils, discrete inputs, holding and input registers). Turn on **随机变化 (Random Mutation)** to make values move; click any row to decode it in the value panel.
 
 ![ModbusSlave with running server, mutating registers and value panel](docs/screenshots/tut-1-slave.png)
 
-### 2 · Master — create a connection
+**Tip · default init & batch add**: new slaves pre-fill addresses 0–20,000 across all four register types, and batch-add handles up to 50,000 entries per operation.
+
+### Step 2 · Master — create a connection
 
 Open **ModbusMaster** and click **新建连接 (New Connection)**. The defaults already target the local Slave: address `127.0.0.1`, port `502`, slave ID `1`. Tick **启用 TLS (Enable TLS)** for a secure link. Click **创建 (Create)**, then **连接 (Connect)**.
 
 ![New Connection dialog](docs/screenshots/tut-2-master-newconn.png)
 
-### 3 · Master — scan groups fill the table
+**Tip · SOCKS5 proxy**: on TCP, TCP+TLS and RTU-over-TCP, tick **Use SOCKS5 proxy** to route the connection through a proxy with optional username/password authentication and proxy-side DNS resolution — handy when the target sits behind a jump host or industrial gateway.
+
+### Step 3 · Master — scan groups fill the table
 
 Add scan groups (e.g. holding registers 0–59 and coils 0–31) and start polling. The connection tree shows each group with its function code and range; the table refreshes on every poll with the values served by the Slave.
 
 ![Master data table polling the slave](docs/screenshots/tut-3-master-data.png)
 
-### 4 · Watch the wire
+### Step 4 · Slave — drive values with data sources & mutation
 
-Expand **通信日志 (Communication Log)** at the bottom: every TX/RX pair is decoded — direction, function code and a readable detail. Back on the Slave, mutated values surface in the Master's table on the next poll. Write back from the Master (FC05/06/15/16) and confirm the change lands on the Slave.
+Back on the Slave, make the registers move and watch them surface on the Master's next poll:
+
+- **Right-click → 数据源 (Data Source)** on any register — pick Fixed, Random, Sine, Sawtooth, Triangle, Counter or CSV sequence playback, each with its own update interval and wave parameters.
+- **Right-click → 周期变位 (Periodic Mutation)** on any register(s) — discrete points flip, analog points ramp between min/max bounds with a configurable step. The minimum period is 100 ms, and every point runs on its own independent schedule.
+- Both settings persist in `.modbusproj` project files, so a saved scenario replays identically after reload.
+
+### Step 5 · Master — write back
+
+Use **写入 (Write)** on the Master to send FC05/06/15/16 — single/multiple coils and registers. Confirm the change lands on the Slave's table (and in its communication log) before the next poll.
+
+### Step 6 · Read the wire — decoded frames
+
+Expand **通信日志 (Communication Log)** at the bottom: every TX/RX pair is decoded — direction, function code and a readable detail (`R 0 x60`, `60 regs`), filterable by direction / function code / text and exportable to CSV. The master's **auto-reconnect** attempts are all logged.
 
 ![Communication log with decoded frames](docs/screenshots/tut-4-master-log.png)
+
+That's the full round-trip — server, registers, polling, simulation, write-back and wire-level inspection, all on your desktop.
 
 ## Architecture
 
 ```
 ModbusSim/
 ├── crates/
-│   ├── modbussim-core/        # Core library: protocol, transport, registers, logging
+│   ├── modbussim-core/            # Core library: protocol, transports, registers, logging
 │   │   └── src/
-│   │       ├── slave.rs       # Slave connection (TCP/RTU/ASCII/RtuOverTcp dispatch)
-│   │       ├── master.rs      # Master connection with multi-transport support
-│   │       ├── frame.rs       # RTU/ASCII frame encode/decode
-│   │       ├── pdu.rs         # Modbus PDU request/response parsing
-│   │       ├── transport.rs   # Transport enum, serial config, TLS config, port enumeration
-│   │       ├── mbap.rs        # MBAP frame encoding/decoding (for TLS mode)
-│   │       ├── tls_slave.rs   # TLS-enabled Modbus TCP slave server
-│   │       ├── tls_master.rs  # TLS-enabled Modbus TCP master client
-│   │       ├── register.rs    # Register types, encoding/decoding
-│   │       ├── data_source.rs # Dynamic data sources for register simulation
-│   │       ├── reconnect.rs   # Reconnect policy with exponential backoff
-│   │       ├── error.rs       # Unified ModbusError enum
-│   │       ├── project.rs     # .modbusproj file save/load/migrate
-│   │       └── log_collector.rs # Thread-safe log ring buffer
-│   ├── modbussim-app/         # Slave Tauri application
-│   └── modbusmaster-app/      # Master Tauri application
-├── frontend/                  # Slave Vue 3 frontend
-├── master-frontend/           # Master Vue 3 frontend
-└── shared-frontend/           # Shared Vue components, composables, i18n
+│   │       ├── slave.rs / master.rs           # Slave & Master connection (TCP/RTU/ASCII/RtuOverTcp dispatch)
+│   │       ├── frame.rs / pdu.rs / parse.rs   # RTU/ASCII frame encode/decode, Modbus PDU parsing
+│   │       ├── mbap.rs                        # MBAP frame encoding/decoding (for TLS mode)
+│   │       ├── tls_slave.rs / tls_master.rs   # TLS-enabled Modbus TCP slave server & master client
+│   │       ├── ascii_slave.rs / ascii_master.rs       # ASCII serial transport
+│   │       ├── rtu_slave.rs / rtu_master.rs           # RTU serial transport
+│   │       ├── rtu_tcp_slave.rs / rtu_tcp_master.rs   # RTU-over-TCP transport
+│   │       ├── socks5.rs                      # SOCKS5 CONNECT proxying for Master network transports
+│   │       ├── transport.rs                   # Transport enum, serial config, TLS config, port enumeration
+│   │       ├── register.rs                    # Register types, encoding/decoding (incl. wide 32-bit values)
+│   │       ├── data_source.rs                 # Per-point data sources (sine, counter, CSV playback…)
+│   │       ├── mutation.rs                    # Per-point periodic mutation schedules
+│   │       ├── reconnect.rs                   # Reconnect policy with exponential backoff
+│   │       ├── error.rs                       # Unified ModbusError enum
+│   │       ├── project.rs                     # .modbusproj file save/load/migrate
+│   │       ├── config.rs                      # Connection & scan-group configuration types
+│   │       └── log_collector.rs / log_entry.rs / log_helpers.rs  # Thread-safe log ring buffer
+│   ├── modbussim-app/             # Slave Tauri application — ModbusSlave
+│   └── modbusmaster-app/          # Master Tauri application — ModbusMaster
+├── frontend/                      # Slave Vue 3 frontend
+├── master-frontend/               # Master Vue 3 frontend
+└── shared-frontend/               # Shared Vue components, composables, i18n
 ```
 
 | Layer | Stack |
