@@ -39,6 +39,17 @@ export type { DirectionFilter, FcFilter } from './composables/useLogFilter'
 export { useErrorHandler } from './composables/useErrorHandler'
 export type { Toast } from './composables/useErrorHandler'
 
+// Update progress
+export {
+  localizeUpdateError,
+  updateProgressLabel,
+  useUpdateProgress,
+} from './composables/useUpdateProgress'
+export type {
+  UpdateProgress,
+  UpdateProgressStage,
+} from './composables/useUpdateProgress'
+
 // Components
 export { default as AppDialog } from './components/AppDialog.vue'
 export { default as LangToggle } from './components/LangToggle.vue'
