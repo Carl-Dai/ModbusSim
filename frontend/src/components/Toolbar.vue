@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import { ref, inject, type Ref } from 'vue'
+import { computed, ref, inject, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { save, open } from '@tauri-apps/plugin-dialog'
-import { useI18n, LangToggle, VersionBadge, showAlert, showConfirm } from 'shared-frontend'
+import {
+  useI18n,
+  useUpdateProgress,
+  localizeUpdateError,
+  LangToggle,
+  VersionBadge,
+  showAlert,
+  showConfirm,
+} from 'shared-frontend'
 import NewConnectionDialog from './NewConnectionDialog.vue'
 import NewSlaveDialog from './NewSlaveDialog.vue'
 import MutationControl from './MutationControl.vue'
@@ -23,18 +31,29 @@ const mutationControlKey = ref(0)
 type UpdateMeta = { version: string; notes: string; pub_date?: string | null }
 const checkUpdate = inject<(force?: boolean) => Promise<UpdateMeta | null>>('checkUpdate')!
 const updateChecking = ref(false)
+const updateProgress = useUpdateProgress(t)
+const updateBusy = computed(() => updateChecking.value || updateProgress.active.value)
+const updateButtonLabel = computed(() =>
+  updateProgress.active.value
+    ? updateProgress.label.value
+    : updateChecking.value
+      ? t('toolbar.checkingUpdate')
+      : t('toolbar.checkUpdate'),
+)
 
 async function manualCheckUpdate() {
-  if (updateChecking.value) return
+  if (updateBusy.value) return
   updateChecking.value = true
+  let message: string | null = null
   try {
     const meta = await checkUpdate(true)
-    if (!meta) await showAlert(t('toolbar.alreadyLatest'))
+    if (!meta) message = t('toolbar.alreadyLatest')
   } catch (e) {
-    await showAlert(`${t('toolbar.updateCheckFailed')}: ${e}`)
+    message = `${t('toolbar.updateCheckFailed')}: ${localizeUpdateError(e, t)}`
   } finally {
     updateChecking.value = false
   }
+  if (message) await showAlert(message)
 }
 
 async function openProject() {
@@ -176,8 +195,8 @@ async function openTools() {
       </button>
     </div>
     <div class="toolbar-spacer" style="flex:1"></div>
-    <button class="toolbar-btn" :disabled="updateChecking" @click="manualCheckUpdate">
-      <span class="toolbar-label">{{ updateChecking ? t('toolbar.checkingUpdate') : t('toolbar.checkUpdate') }}</span>
+    <button class="toolbar-btn" :disabled="updateBusy" @click="manualCheckUpdate">
+      <span class="toolbar-label" aria-live="polite">{{ updateButtonLabel }}</span>
     </button>
     <LangToggle />
     <VersionBadge />
